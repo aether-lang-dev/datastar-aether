@@ -12,8 +12,22 @@ struct-literal `*T` field emitting `.` not `->`, `ae build -o` not
 creating its output directory, and `ae fmt` writing `i ++`. Closure
 shadowing was fixed on the 0.630.0 line.
 
-Item 4 (streaming compression) is being built upstream right now but is
-unreleased, so it stays here until it is adoptable.
+Item 4 (streaming compression) shipped in 0.633.0, and SSE
+upgrade-in-place plus the `retry:` field shipped in 0.634.0 (#1899) —
+both asked for by this port. Neither is adopted here yet: the stdlib
+installed on this box is 0.629.0, so the new calls do not resolve for an
+ordinary `ae run`. See asks/sse-upgrade-in-place-REPLY.md for the
+wire-level verification and the migration sketch.
+
+KNOWN DEFECT, unfixed until that migration happens: SSE is
+PLAINTEXT-ONLY. `datastar.new_sse` upgrades via
+`http.response_accept_tunnel`, which refuses a TLS-wrapped connection
+(aether_http_server.c:2253, `if (conn->ssl || conn->pure_tls) return
+NULL;`), so an HTTPS endpoint fails at runtime with "failed to take over
+connection for SSE". Nothing in the test matrix catches it — the
+conformance runner is plain HTTP. `http.response_upgrade_sse` writes
+through the connection's own send path and does not have this limit,
+which is the main reason to migrate.
 
 
 -----------------------------------------------------------------------

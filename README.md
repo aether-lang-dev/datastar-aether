@@ -224,12 +224,27 @@ send verbs rather than a redesign.
 
 ## Design notes
 
-**Why not `http.server_sse`?** The stdlib has a built-in SSE route, but
-it cannot carry this protocol: it emits `id:` before `event:` and has no
-`retry:` line at all. This SDK registers an ordinary route and calls
+**HTTPS is not supported yet.** `new_sse` takes the raw socket via
+`http.response_accept_tunnel`, which refuses a TLS-wrapped connection,
+so an endpoint served over HTTPS fails at runtime with "failed to take
+over connection for SSE". Aether 0.634.0 added
+`http.response_upgrade_sse`, which writes through the connection's own
+send path and works over TLS; migrating to it is the fix and is
+[written up in full](asks/sse-upgrade-in-place-REPLY.md).
+
+**Why not `http.server_sse`?** Two reasons, one of which has since
+been fixed. It registers a whole *route* as SSE, so the decision is made
+before the body is parsed — but a Datastar handler must be able to
+answer 400 on a malformed body and only then stream. And until 0.634.0
+it could not emit a `retry:` line at all, which 5 of the 20 conformance
+goldens require. So this SDK registers an ordinary route and calls
 `http.response_accept_tunnel` to take the socket, which gives it every
-byte after the response head — exactly what Datastar's client format
-needs.
+byte after the response head.
+
+Aether 0.634.0 closed both gaps — `http.response_upgrade_sse` is the
+upgrade-in-place seam, and `http.sse_send_full` carries `retry:` — so
+the raw-socket approach is no longer the only option. See the
+[reply to that ask](asks/sse-upgrade-in-place-REPLY.md).
 
 **Aether issues found while porting** are logged in
 [`aether-issues.txt`](aether-issues.txt), with minimal reproducers.
