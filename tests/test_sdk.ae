@@ -11,7 +11,10 @@ import std.list
 import std.json
 import std.tcp
 import std.os
+import std.fs
 import datastar
+
+const ONCE_SERVER = "target/once_server"
 
 main() {
     fw = spec.init()
@@ -361,6 +364,18 @@ main() {
         spec.it("sends exactly one script frame from a block") callback {
             expect_one_frame("script", "type=\"module\"")
         }
+
+        // The send path decides whether `retry:` travels, and it is not
+        // the code the conformance goldens exercise (those assert on
+        // `frame()`, the string builder). Without these two, dropping
+        // the default-suppression check passes everything.
+        spec.it("suppresses a default retry on the wire") callback {
+            expect_no_retry("retry-default")
+        }
+
+        spec.it("sends a non-default retry on the wire") callback {
+            expect_one_frame("retry-custom", "retry: 2000\n")
+        }
     }
 
     spec.describe(fw, "backend action attributes") {
@@ -410,11 +425,14 @@ main() {
     spec.describe(fw, "sse handle") {
         spec.it("reports a null handle as closed") callback {
             spec.assert_eq(datastar.sse_is_closed(null), 1, "null is closed")
-            spec.assert_null(datastar.sse_socket(null), "null has no socket")
+            spec.assert_null(datastar.sse_conn(null), "null has no connection")
         }
 
         spec.it("refuses to write to a null handle") callback {
-            err = datastar.sse_send_frame(null, "event: x\n\n")
+            rows = list.new()
+            defer list.free(rows)
+            list.add(rows, "elements <div/>")
+            err = datastar.sse_send_lines(null, "datastar-patch-elements", rows, "", 0)
             spec.assert_true(err != "", "writing to nothing is an error, not a crash")
         }
 
@@ -441,51 +459,95 @@ main() {
 // in assignment position ran its body twice, and because the second call
 // overwrote the first the RESULT looked correct — only counting what
 // reached the wire catches it.
+// Assert exactly one frame arrived and it carries no `retry:` line.
+fn expect_no_retry(kind: string) {
+    got = fetch_one(kind)
+    if got == "" { return }
+    spec.assert_eq(count_events(got), 1, "${kind}: exactly one frame on the wire")
+    spec.assert_eq(string.contains(got, "retry:"), 0,
+        "${kind}: a retry equal to the default must not travel")
+}
+
 fn expect_one_frame(kind: string, needle: string) {
-    port = 47311
-    if kind == "signals" { port = 47312 }
-    if kind == "script" { port = 47313 }
-
-    srv, lerr = tcp.listen(port)
-    if lerr != "" { spec.fail("cannot listen on ${port}: ${lerr}"); return }
-
-    client, cerr = tcp.connect("127.0.0.1", port)
-    if cerr != "" { spec.fail("cannot connect: ${cerr}"); tcp.server_close(srv); return }
-
-    peer, aerr = tcp.accept(srv)
-    if aerr != "" { spec.fail("cannot accept: ${aerr}"); tcp.close(client); tcp.server_close(srv); return }
-
-    sse = datastar.sse_over_socket(client)
-
-    err = ""
-    if kind == "elements" {
-        err = datastar.patch_elements_with(sse, "<div/>") {
-            datastar.with_selector("#target")
-            datastar.with_mode_append()
-        }
-    }
-    if kind == "signals" {
-        err = datastar.patch_signals_with(sse, "{\"a\":1}") {
-            datastar.with_only_if_missing(1)
-        }
-    }
-    if kind == "script" {
-        err = datastar.execute_script_with(sse, "x()") {
-            datastar.with_script_attribute_kv("type", "module")
-        }
-    }
-    spec.assert_str_eq(err, "", "${kind}: no send error")
-
-    // Close the writer so the reader sees EOF rather than blocking.
-    tcp.close(client)
-
-    got = drain(peer)
-    tcp.close(peer)
-    tcp.server_close(srv)
-
+    got = fetch_one(kind)
+    if got == "" { return }
     spec.assert_eq(count_events(got), 1, "${kind}: exactly one frame on the wire")
     spec.assert_true(string.contains(got, needle) == 1,
         "${kind}: the block's option reached the wire")
+}
+
+// Spawn the fixture for `kind`, drive one request, and return the SSE
+// body it wrote. "" means the attempt failed and has already been
+// reported, so the caller should just return.
+//
+// This drives a REAL HTTP server rather than a loopback socket pair,
+// because the SDK now upgrades in place with http.response_upgrade_sse
+// and there is no socket to hand it. Exercising the actual upgrade path
+// is the stronger test anyway.
+fn fetch_one(kind: string) -> string {
+    port = port_for(kind)
+
+    if fs.exists(ONCE_SERVER) == 0 {
+        spec.fail("fixture ${ONCE_SERVER} not built — run `task build-fixtures`")
+        return ""
+    }
+
+    argv = list.new()
+    list.add(argv, ONCE_SERVER)
+    env = list.new()
+    list.add(env, "ONCE_PORT=${port}")
+    list.add(env, "ONCE_KIND=${kind}")
+
+    token, serr = os.spawn_proc(ONCE_SERVER, argv, env)
+    list.free(argv)
+    list.free(env)
+    if serr != "" { spec.fail("${kind}: cannot spawn fixture: ${serr}"); return "" }
+
+    // Dial until the listener is up rather than sleeping a guessed interval.
+    sock = null
+    for (i = 0; i < 80; i++) {
+        c, cerr = tcp.connect("127.0.0.1", port)
+        if cerr == "" { sock = c; break }
+        sleep(25)
+    }
+    if sock == null {
+        spec.fail("${kind}: fixture never came up on ${port}")
+        _e, _w = os.wait(token)
+        return ""
+    }
+
+    req = "GET /once HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n"
+    _n, werr = tcp.write_n(sock, req, string.length(req))
+    if werr != "" {
+        spec.fail("${kind}: cannot send request: ${werr}")
+        tcp.close(sock)
+        _e2, _w2 = os.wait(token)
+        return ""
+    }
+
+    raw = drain(sock)
+    tcp.close(sock)
+    _e3, _w3 = os.wait(token)
+
+    if string.length(raw) == 0 {
+        spec.fail("${kind}: fixture sent nothing")
+        return ""
+    }
+
+    // Everything after the blank line that ends the response head.
+    sep = string.index_of(raw, "\r\n\r\n")
+    if sep < 0 { return raw }
+    return string.substring(raw, sep + 4, string.length(raw))
+}
+
+// One port per kind, so a lingering fixture cannot be mistaken for the
+// next test's server.
+fn port_for(kind: string) -> int {
+    if kind == "signals" { return 47312 }
+    if kind == "script" { return 47313 }
+    if kind == "retry-default" { return 47314 }
+    if kind == "retry-custom" { return 47315 }
+    return 47311
 }
 
 fn drain(sock: ptr) -> string {

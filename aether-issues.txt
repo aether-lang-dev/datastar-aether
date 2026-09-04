@@ -14,21 +14,20 @@ shadowing was fixed on the 0.630.0 line.
 
 Item 4 (streaming compression) shipped in 0.633.0, and SSE
 upgrade-in-place plus the `retry:` field shipped in 0.634.0 (#1899) —
-both asked for by this port, and both released (v0.634.0 is tagged and
-pushed). Neither is adopted here yet for a purely local reason: the
-stdlib INSTALLED on this box is 0.629.0 and /usr/local needs root, so
-the new calls do not resolve for an ordinary `ae run`. See asks/sse-upgrade-in-place-REPLY.md for the
-wire-level verification and the migration sketch.
+both asked for by this port.
 
-KNOWN DEFECT, unfixed until that migration happens: SSE is
-PLAINTEXT-ONLY. `datastar.new_sse` upgrades via
-`http.response_accept_tunnel`, which refuses a TLS-wrapped connection
-(aether_http_server.c:2253, `if (conn->ssl || conn->pure_tls) return
-NULL;`), so an HTTPS endpoint fails at runtime with "failed to take over
-connection for SSE". Nothing in the test matrix catches it — the
-conformance runner is plain HTTP. `http.response_upgrade_sse` writes
-through the connection's own send path and does not have this limit,
-which is the main reason to migrate.
+The SSE work is ADOPTED as of 2026-09-04. `datastar.new_sse` now calls
+`http.response_upgrade_sse` and every event goes out through
+`http.sse_send_full`, so the raw socket, `sse_over_socket` and this
+SDK's own `frame()`-on-the-send-path are gone. That fixes a real defect:
+the old `http.response_accept_tunnel` refuses a TLS-wrapped connection
+(aether_http_server.c, `if (conn->ssl || conn->pure_tls) return NULL;`),
+so every endpoint was silently plaintext-only and no test caught it —
+the whole matrix is plain HTTP. Verified by the upstream Go runner:
+22/22 subtests against the migrated server.
+
+Streaming compression (item 4 below) is still NOT adopted. The API
+shipped and matches what was asked for, but nothing here uses it yet.
 
 
 -----------------------------------------------------------------------

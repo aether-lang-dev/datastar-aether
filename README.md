@@ -22,16 +22,17 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.631.0** or later, and `contrib.tinyweb` for the examples'
+Aether **0.634.0** or later, and `contrib.tinyweb` for the examples'
 routing (it ships with a standard Aether install).
 
-Three fixes this SDK depends on, all upstream:
+Four fixes this SDK depends on, all upstream:
 
 | version | what it fixed for us |
 |---|---|
 | [0.629.0](https://github.com/aether-lang-dev/aether/pull/1881) | an E0200 false positive that took out the native WebDriver binding, so the component tests could not compile |
 | [0.630.0](https://github.com/aether-lang-dev/aether/pull/1886) | a stale-cache bug that let a suite report green against code it never compiled |
 | [0.631.0](https://github.com/aether-lang-dev/aether/pull/1888) | a value-returning builder running its body twice — for a send verb, every event went out twice |
+| [0.634.0](https://github.com/aether-lang-dev/aether/pull/1899) | SSE upgrade-in-place and the `retry:` field, which together let this SDK serve HTTPS |
 
 The SDK's core builds on older toolchains; the `*_with` verbs and the
 component tests do not.
@@ -224,27 +225,25 @@ send verbs rather than a redesign.
 
 ## Design notes
 
-**HTTPS is not supported yet.** `new_sse` takes the raw socket via
-`http.response_accept_tunnel`, which refuses a TLS-wrapped connection,
-so an endpoint served over HTTPS fails at runtime with "failed to take
-over connection for SSE". Aether 0.634.0 added
-`http.response_upgrade_sse`, which writes through the connection's own
-send path and works over TLS; migrating to it is the fix and is
-[written up in full](asks/sse-upgrade-in-place-REPLY.md).
+**The transport is `http.response_upgrade_sse`.** A handler registers
+an ordinary route, validates the request, and only then upgrades the
+in-flight response to a stream — which matters because a malformed body
+has to be answerable with a 400, and that is impossible once the
+response has become a stream. Each event then goes out through
+`http.sse_send_full`.
 
-**Why not `http.server_sse`?** Two reasons, one of which has since
-been fixed. It registers a whole *route* as SSE, so the decision is made
-before the body is parsed — but a Datastar handler must be able to
-answer 400 on a malformed body and only then stream. And until 0.634.0
-it could not emit a `retry:` line at all, which 5 of the 20 conformance
-goldens require. So this SDK registers an ordinary route and calls
-`http.response_accept_tunnel` to take the socket, which gives it every
-byte after the response head.
+It did not always work this way, and the history is worth knowing.
+`http.server_sse` registers a whole *route* as SSE, so the decision is
+made before the body is parsed, and until 0.634.0 it could not emit a
+`retry:` line at all — which 5 of the 20 conformance goldens require.
+The only other seam was `http.response_accept_tunnel`, which seizes the
+raw socket and **refuses a TLS-wrapped connection**, so every endpoint
+built on it was silently plaintext-only. Aether 0.634.0 added both
+missing pieces at this port's request; see the
+[ask and reply](asks/sse-upgrade-in-place-REPLY.md).
 
-Aether 0.634.0 closed both gaps — `http.response_upgrade_sse` is the
-upgrade-in-place seam, and `http.sse_send_full` carries `retry:` — so
-the raw-socket approach is no longer the only option. See the
-[reply to that ask](asks/sse-upgrade-in-place-REPLY.md).
+The practical consequence: **HTTPS works.** Writes go through the
+connection's own send path rather than a raw fd.
 
 **Aether issues found while porting** are logged in
 [`aether-issues.txt`](aether-issues.txt), with minimal reproducers.

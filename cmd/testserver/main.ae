@@ -40,10 +40,12 @@ const DEFAULT_PORT = 7331
     }
     defer json.json_free(doc)
 
-    // Decode every event BEFORE upgrading the connection. Once the
-    // response is tunnelled there is no status code left to send, so a
-    // malformed document has to fail while we can still answer 400.
-    stream, derr = testevents.events_frames(doc)
+    // Decode every event BEFORE upgrading. Once the response becomes a
+    // stream there is no status code left to send, so a malformed
+    // document has to fail while we can still answer 400 — and
+    // http.response_upgrade_sse REFUSES a response that already carries
+    // a body, which is exactly the error path below.
+    _check, derr = testevents.events_frames(doc)
     if derr != "" {
         respond_error(res, 400, derr)
         return
@@ -56,7 +58,7 @@ const DEFAULT_PORT = 7331
     }
     defer datastar.sse_close(sse)
 
-    werr = datastar.sse_send_frame(sse, stream)
+    werr = testevents.events_send(sse, doc)
     if werr != "" { println("send failed: ${werr}") }
 }
 

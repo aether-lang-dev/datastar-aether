@@ -1,0 +1,77 @@
+// Fixture: serve exactly ONE Datastar event per request, through the
+// trailing-block send verbs, then exit.
+//
+// It exists so tests/test_sdk.ae can COUNT what reaches the wire. The
+// count is the point: before aether#1888 a value-returning builder in
+// assignment position ran its body twice, and because the second call
+// overwrote the first the returned value looked correct. Only counting
+// frames catches that shape.
+//
+// This used to be done over a raw loopback socket. It goes through a
+// real HTTP server now because the SDK upgrades in place with
+// http.response_upgrade_sse — there is no socket to hand it — and
+// driving the actual upgrade path is the stronger test anyway.
+//
+// ONCE_KIND picks which verb to exercise; ONCE_PORT where to listen.
+
+import std.os
+import std.string
+import contrib.tinyweb
+import datastar
+
+main() {
+    kind = os.getenv("ONCE_KIND")
+    if kind == "" { kind = "elements" }
+
+    port_s = os.getenv("ONCE_PORT")
+    if port_s == "" { port_s = "47311" }
+    port, perr = string.to_int(port_s)
+    if perr != "" { return 1 }
+
+    server = tinyweb.web_server_host("127.0.0.1", port) {
+        tinyweb.end_point(tinyweb.GET, "/once") |req: ptr, res: ptr, ctx: ptr| {
+            sse, serr = datastar.new_sse(res)
+            if serr != "" { os.exit(1) }
+
+            if kind == "elements" {
+                _e = datastar.patch_elements_with(sse, "<div/>") {
+                    datastar.with_selector("#target")
+                    datastar.with_mode_append()
+                }
+            }
+            if kind == "signals" {
+                _s = datastar.patch_signals_with(sse, "{\"a\":1}") {
+                    datastar.with_only_if_missing(1)
+                }
+            }
+            // Two retry cases, because the SEND path decides whether the
+            // field travels at all: the default must be suppressed (the
+            // client already assumes it) and a non-default must survive.
+            if kind == "retry-default" {
+                _rd = datastar.patch_elements_with(sse, "<div/>") {
+                    datastar.with_retry_duration(datastar.DEFAULT_SSE_RETRY_DURATION)
+                }
+            }
+            if kind == "retry-custom" {
+                _rc = datastar.patch_elements_with(sse, "<div/>") {
+                    datastar.with_retry_duration(2000)
+                }
+            }
+            if kind == "script" {
+                _c = datastar.execute_script_with(sse, "x()") {
+                    datastar.with_script_attribute_kv("type", "module")
+                }
+            }
+
+            // One stream and done. The test reaps this with os.wait,
+            // which blocks until exit, so a server that ran forever
+            // would hang the suite rather than fail it.
+            datastar.sse_close(sse)
+            os.exit(0)
+        }
+    }
+
+    tinyweb.tw_start(server)
+    tinyweb.tw_stop(server)
+    return 0
+}

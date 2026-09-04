@@ -26,6 +26,7 @@ import datastar
 
 exports(
     event_frame, events_frames,
+    event_send, events_send,
     json_field_string, json_field_int, json_field_bool
 )
 
@@ -84,6 +85,49 @@ event_frame(event: ptr) -> (string, string) {
     }
 }
 
+// Send every event of a `{ "events": [ ... ] }` document down an open
+// SSE stream, in order. Returns "" on success.
+//
+// The sibling of `events_frames`: that one BUILDS the byte stream for
+// the offline test to compare, this one SENDS it through the SDK's own
+// verbs. Both walk the same decoders, so the offline suite and the
+// server the upstream runner drives cannot disagree about what an event
+// means — only about where the bytes go.
+//
+// Sending per event rather than writing one concatenated blob is what
+// the migration to `http.sse_send_full` requires: the stdlib frames one
+// event per call, which is also the shape the SDK's verbs have always
+// had.
+events_send(sse: ptr, doc: ptr) -> string {
+    if sse == null { return "no sse handle" }
+    if doc == null { return "null document" }
+
+    events, _ = json.object_get(doc, "events")
+    if events == null { return "no events array" }
+    if json.json_type(events) != JSON_ARRAY { return "events is not an array" }
+
+    n = json.json_array_size(events)
+    for (i = 0; i < n; i++) {
+        ev, _ = json.array_get(events, i)
+        err = event_send(sse, ev)
+        if err != "" { return err }
+    }
+    return ""
+}
+
+// Send one decoded conformance event. Mirrors `event_frame`'s dispatch.
+event_send(sse: ptr, event: ptr) -> string {
+    if event == null { return "null event" }
+
+    kind = json_field_string(event, "type", "")
+    match (kind) {
+        "patchElements" -> { return patch_elements_send_for(sse, event) }
+        "patchSignals" -> { return patch_signals_send_for(sse, event) }
+        "executeScript" -> { return execute_script_send_for(sse, event) }
+        _ -> { return "unknown event type: ${kind}" }
+    }
+}
+
 // Build every frame for a `{ "events": [ ... ] }` document, concatenated
 // in order — which is exactly the byte stream the golden file holds.
 // Returns (stream, err); the first bad event aborts with its error.
@@ -108,8 +152,21 @@ events_frames(doc: ptr) -> (string, string) {
 // --- per-event-kind decoders ----------------------------------------------
 
 fn patch_elements_frame_for(event: ptr) -> string {
-    o = datastar.element_options_new()
+    o = element_options_for(event)
     defer datastar.element_options_free(o)
+    return datastar.patch_elements_frame(json_field_string(event, "elements", ""), o)
+}
+
+fn patch_elements_send_for(sse: ptr, event: ptr) -> string {
+    o = element_options_for(event)
+    defer datastar.element_options_free(o)
+    return datastar.patch_elements(sse, json_field_string(event, "elements", ""), o)
+}
+
+// The option bag a patchElements event describes. One builder, used by
+// both the frame and the send path, so they cannot drift.
+fn element_options_for(event: ptr) -> ptr {
+    o = datastar.element_options_new()
 
     selector = json_field_string(event, "selector", "")
     if selector != "" { datastar.with_selector(o, selector) }
@@ -144,13 +201,23 @@ fn patch_elements_frame_for(event: ptr) -> string {
     retry = json_field_int(event, "retryDuration", 0)
     if retry > 0 { datastar.with_retry_duration(o, retry) }
 
-    elements = json_field_string(event, "elements", "")
-    return datastar.patch_elements_frame(elements, o)
+    return o
 }
 
 fn patch_signals_frame_for(event: ptr) -> string {
-    o = datastar.signal_options_new()
+    o = signal_options_for(event)
     defer datastar.signal_options_free(o)
+    return datastar.patch_signals_frame(signals_payload(event), o)
+}
+
+fn patch_signals_send_for(sse: ptr, event: ptr) -> string {
+    o = signal_options_for(event)
+    defer datastar.signal_options_free(o)
+    return datastar.patch_signals(sse, signals_payload(event), o)
+}
+
+fn signal_options_for(event: ptr) -> ptr {
+    o = datastar.signal_options_new()
 
     only_if_missing = json_field_bool(event, "onlyIfMissing", -1)
     if only_if_missing >= 0 { datastar.with_only_if_missing(o, only_if_missing) }
@@ -161,28 +228,41 @@ fn patch_signals_frame_for(event: ptr) -> string {
     retry = json_field_int(event, "retryDuration", 0)
     if retry > 0 { datastar.with_retry_duration(o, retry) }
 
-    // `signals-raw` carries a JSON document verbatim, newlines and all,
-    // so the suite can check that a multi-line payload survives the
-    // dataline split. `signals` is a real JSON value that we re-serialize
-    // compactly. Neither is required; absent means `{}`.
+    return o
+}
+
+// The signals JSON a patchSignals event carries.
+//
+// `signals-raw` holds a document verbatim, newlines and all, so the
+// suite can check that a multi-line payload survives the dataline
+// split. `signals` is a real JSON value we re-serialize compactly.
+// Neither is required; absent means `{}`.
+fn signals_payload(event: ptr) -> string {
     raw = json_field_string(event, "signals-raw", "")
-    if raw != "" {
-        return datastar.patch_signals_frame(raw, o)
-    }
+    if raw != "" { return raw }
 
     signals, _ = json.object_get(event, "signals")
-    if signals == null {
-        return datastar.patch_signals_frame("{}", o)
-    }
+    if signals == null { return "{}" }
 
     payload, err = json.stringify(signals)
-    if err != "" { payload = "{}" }
-    return datastar.patch_signals_frame(payload, o)
+    if err != "" { return "{}" }
+    return payload
 }
 
 fn execute_script_frame_for(event: ptr) -> string {
-    o = datastar.script_options_new()
+    o = script_options_for(event)
     defer datastar.script_options_free(o)
+    return datastar.execute_script_frame(json_field_string(event, "script", ""), o)
+}
+
+fn execute_script_send_for(sse: ptr, event: ptr) -> string {
+    o = script_options_for(event)
+    defer datastar.script_options_free(o)
+    return datastar.execute_script(sse, json_field_string(event, "script", ""), o)
+}
+
+fn script_options_for(event: ptr) -> ptr {
+    o = datastar.script_options_new()
 
     auto_remove = json_field_bool(event, "autoRemove", -1)
     if auto_remove >= 0 { datastar.with_auto_remove(o, auto_remove) }
@@ -208,8 +288,7 @@ fn execute_script_frame_for(event: ptr) -> string {
     retry = json_field_int(event, "retryDuration", 0)
     if retry > 0 { datastar.with_retry_duration(o, retry) }
 
-    script = json_field_string(event, "script", "")
-    return datastar.execute_script_frame(script, o)
+    return o
 }
 
 // Render a JSON scalar the way Go's `%v` would, so an attribute value

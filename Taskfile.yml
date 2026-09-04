@@ -15,15 +15,20 @@ tasks:
 
   test:
     desc: Run the full test suite (conformance goldens, SDK units, streaming)
+    # test_sdk spawns target/once_server to count frames on the wire, so
+    # the fixtures have to exist before it runs, not just before
+    # test-streaming.
+    deps: [build-fixtures]
     cmds:
       - ae run tests/test_conformance.ae
       - ae run tests/test_sdk.ae
       - task: test-streaming
 
   build-fixtures:
-    desc: Build the test fixtures tests/test_streaming.ae spawns
+    desc: Build the fixtures the test suites spawn
     cmds:
       - ae build tests/fixtures/tick_server.ae
+      - ae build -o target/once_server tests/fixtures/once_server.ae
 
   # Spawns a real server and times event arrival, so it is slower and
   # noisier than the pure suites — but it is the only check that the
@@ -41,6 +46,7 @@ tasks:
 
   test-unit:
     desc: Run only the SDK unit tests
+    deps: [build-fixtures]
     cmds:
       - ae run tests/test_sdk.ae
 

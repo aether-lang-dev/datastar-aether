@@ -16,7 +16,7 @@
 //      frames down it.
 //
 // Splitting them that way is what makes the SDK testable without a
-// server: the format is a string function, the transport is a `tcp.write`.
+// server: the format is a string function, the transport is one stdlib call.
 //
 // Options ride in a heap-boxed struct filled by a trailing block, which
 // is Aether's answer to Go's variadic functional options:
@@ -34,7 +34,6 @@ import std.string
 import std.list
 import std.json
 import std.http
-import std.tcp
 import std.strbuilder
 
 exports(
@@ -85,8 +84,8 @@ exports(
 
     // --- SSE transport --------------------------------------------------
     Sse,
-    new_sse, sse_over_socket, sse_socket, sse_is_closed, sse_close,
-    sse_send_frame, sse_send,
+    new_sse, sse_over_conn, sse_conn, sse_is_closed, sse_close,
+    sse_send_lines, sse_send,
     patch_elements, patch_signals, patch_signals_if_missing,
     patch_elements_with, patch_signals_with, execute_script_with,
     remove_element, remove_element_by_id,
@@ -577,6 +576,19 @@ frame_lines(out: ptr, literal: string, text: string) {
 // Build the datastar-patch-elements frame. `opts` may be null for
 // all-defaults.
 patch_elements_frame(elements: string, opts: ptr) -> string {
+    rows, event_id, retry_ms = patch_elements_parts(elements, opts)
+    defer list.free(rows)
+    return frame(EVENT_TYPE_PATCH_ELEMENTS, rows, event_id, retry_ms)
+}
+
+// The parts of a patch-elements event: its datalines, plus the event id
+// and retry the envelope needs. Split out from `patch_elements_frame` so
+// the SEND path can hand the parts to `http.sse_send_full` while the
+// wire-format tests keep asserting on the built string. One source of
+// datalines either way — the two cannot drift.
+//
+// Caller owns `rows` and must `list.free` it.
+fn patch_elements_parts(elements: string, opts: ptr) -> (ptr, string, int) {
     event_id = ""
     retry_ms = DEFAULT_SSE_RETRY_DURATION
     selector = ""
@@ -597,7 +609,6 @@ patch_elements_frame(elements: string, opts: ptr) -> string {
     }
 
     rows = list.new()
-    defer list.free(rows)
 
     if selector != "" {
         list.add(rows, "${SELECTOR_DATALINE_LITERAL}${selector}")
@@ -621,13 +632,21 @@ patch_elements_frame(elements: string, opts: ptr) -> string {
 
     frame_lines(rows, ELEMENTS_DATALINE_LITERAL, elements)
 
-    return frame(EVENT_TYPE_PATCH_ELEMENTS, rows, event_id, retry_ms)
+    return (rows, event_id, retry_ms)
 }
 
 // Build the datastar-patch-signals frame. `signals_json` is a JSON
 // document; a multi-line one is split across `data: signals` lines, which
 // is what makes a pretty-printed payload legal on the wire.
 patch_signals_frame(signals_json: string, opts: ptr) -> string {
+    rows, event_id, retry_ms = patch_signals_parts(signals_json, opts)
+    defer list.free(rows)
+    return frame(EVENT_TYPE_PATCH_SIGNALS, rows, event_id, retry_ms)
+}
+
+// Datalines of a patch-signals event. See `patch_elements_parts` for why
+// the split exists. Caller owns `rows`.
+fn patch_signals_parts(signals_json: string, opts: ptr) -> (ptr, string, int) {
     event_id = ""
     retry_ms = DEFAULT_SSE_RETRY_DURATION
     only_if_missing = DEFAULT_PATCH_SIGNALS_ONLY_IF_MISSING
@@ -640,14 +659,13 @@ patch_signals_frame(signals_json: string, opts: ptr) -> string {
     }
 
     rows = list.new()
-    defer list.free(rows)
 
     if only_if_missing == 1 {
         list.add(rows, "${ONLY_IF_MISSING_DATALINE_LITERAL}true")
     }
     frame_lines(rows, SIGNALS_DATALINE_LITERAL, signals_json)
 
-    return frame(EVENT_TYPE_PATCH_SIGNALS, rows, event_id, retry_ms)
+    return (rows, event_id, retry_ms)
 }
 
 // Build the frame that runs `script` in the browser. Datastar has no
@@ -667,6 +685,50 @@ execute_script_frame(script: string, opts: ptr) -> string {
         attrs = o.attributes
     }
 
+    element = script_element(script, attrs, auto_remove)
+
+    eo = element_options_new()
+    defer element_options_free(eo)
+    with_selector(eo, "body")
+    with_mode_append(eo)
+    with_event_id(eo, event_id)
+    with_retry_duration(eo, retry_ms)
+
+    return patch_elements_frame(element, eo)
+}
+
+// Datalines of an execute-script event. A script IS a patch-elements
+// event carrying a <script> tag, so this builds the element the same way
+// and defers to `patch_elements_parts` — the one place that decides what
+// a patch-elements event looks like.
+fn execute_script_parts(script: string, opts: ptr) -> (ptr, string, int) {
+    event_id = ""
+    retry_ms = DEFAULT_SSE_RETRY_DURATION
+    auto_remove = -1
+    attrs = null
+
+    if opts != null {
+        o = opts as *ScriptOptions
+        event_id = o.event_id
+        retry_ms = o.retry_ms
+        auto_remove = o.auto_remove
+        attrs = o.attributes
+    }
+
+    element = script_element(script, attrs, auto_remove)
+
+    eo = element_options_new()
+    defer element_options_free(eo)
+    with_selector(eo, "body")
+    with_mode_append(eo)
+    with_event_id(eo, event_id)
+    with_retry_duration(eo, retry_ms)
+
+    return patch_elements_parts(element, eo)
+}
+
+// The `<script ...>...</script>` an execute-script event carries.
+fn script_element(script: string, attrs: ptr, auto_remove: int) -> string {
     sb = strbuilder.new(256)
     strbuilder.append(sb, "<script")
     if attrs != null {
@@ -685,16 +747,7 @@ execute_script_frame(script: string, opts: ptr) -> string {
     strbuilder.append(sb, ">")
     strbuilder.append(sb, script)
     strbuilder.append(sb, "</script>")
-    element = strbuilder.finish(sb)
-
-    eo = element_options_new()
-    defer element_options_free(eo)
-    with_selector(eo, "body")
-    with_mode_append(eo)
-    with_event_id(eo, event_id)
-    with_retry_duration(eo, retry_ms)
-
-    return patch_elements_frame(element, eo)
+    return strbuilder.finish(sb)
 }
 
 // ---------------------------------------------------------------------------
@@ -712,70 +765,71 @@ delete_sse(url: string) -> string { return "@delete('${url}')" }
 // ---------------------------------------------------------------------------
 // SSE transport
 //
-// `new_sse(res)` writes the event-stream response head and then takes
-// ownership of the socket through `http.response_accept_tunnel`, so the
-// SDK owns every byte after the headers. That is what lets `frame()` put
-// `event:` / `id:` / `retry:` in the order Datastar's client wants: the
-// stdlib's own `http.server_sse` emits `id:` before `event:` and has no
-// retry line at all, so it cannot carry this protocol.
+// `new_sse(res)` upgrades a live response in place with
+// `http.response_upgrade_sse`, and every event goes out through
+// `http.sse_send_full`. That call writes via the connection's own send
+// path rather than a raw socket, so this SDK works over HTTPS.
+//
+// It did not always. Until Aether 0.634.0 the only seam was
+// `http.response_accept_tunnel`, which seizes the raw fd and REFUSES a
+// TLS-wrapped connection, so every endpoint built on it was silently
+// plaintext-only. The stdlib's `sse_send` could not replace it either:
+// it had no `retry:` field, which 5 of the 20 conformance goldens
+// require. 0.634.0 added both halves, so the raw socket is gone.
+//
+// What stayed ours is the frame CONTENT: which datalines an event
+// carries, in what order, with which literals. That is Datastar's
+// protocol rather than SSE's, and it is what the conformance suite
+// pins. The stdlib now owns the SSE envelope around it.
 // ---------------------------------------------------------------------------
 
 struct Sse {
-    socket: ptr,
+    // An `HttpSseConn` from http.response_upgrade_sse, not a socket.
+    conn: ptr,
     closed: int
 }
 
 // Upgrade a live HTTP response to a Datastar SSE stream. Returns
-// (handle, err): a non-empty error means the connection could not be
-// tunnelled (TLS-wrapped, already consumed, or not live) and the handle
-// is null. Close the returned handle with `sse_close`.
+// (handle, err): a non-empty error means the response could not be
+// upgraded (not on a live connection, already taken over, or a body was
+// already set) and the handle is null. Close it with `sse_close`.
+//
+// The response head is the stdlib's: 200, `text/event-stream`,
+// `no-cache`, `Connection: close`. Headers set before this call are
+// discarded — a stale Content-Length would corrupt the stream — and a
+// response that already carries a BODY is refused rather than having
+// that body silently dropped. Both suit the shape a Datastar handler
+// wants: validate, answer 400 with a body on failure, and only upgrade
+// on the success path.
 new_sse(res: ptr) -> (ptr, string) {
     if res == null { return (null, "no response") }
 
-    http.http_response_set_status(res, 200)
-    http.http_response_set_header(res, "Content-Type", "text/event-stream")
-    http.http_response_set_header(res, "Cache-Control", "no-cache")
-    // `close`, not `keep-alive`. Go's SDK can promise keep-alive because
-    // its server still owns the connection after the handler returns;
-    // here the tunnel hands us the socket and we close it when the
-    // stream ends, so promising reuse would strand the next request on a
-    // dead connection. The stdlib's own SSE route sends `close` for the
-    // same reason. Reconnection is the client's job anyway — that is
-    // what the `retry:` line is for.
-    http.http_response_set_header(res, "Connection", "close")
-
-    sock = http.response_accept_tunnel(res)
-    if sock == null {
-        return (null, "failed to take over connection for SSE")
-    }
+    conn, err = http.response_upgrade_sse(res)
+    if err != "" { return (null, "failed to upgrade response for SSE: ${err}") }
 
     sse = heap.new(Sse)
-    sse.socket = sock
+    sse.conn = conn
     sse.closed = 0
     return (sse as ptr, "")
 }
 
-// Wrap an already-connected socket as an SSE handle.
-//
-// `new_sse` is the normal entry point: it writes the response head and
-// tunnels a live HTTP response. This one skips all that and takes the
-// socket directly, for callers that already have one — a test driving
-// the wire format over a loopback pair, or a transport this SDK does not
-// model. The handle owns the socket from here: `sse_close` closes it.
-sse_over_socket(sock: ptr) -> ptr {
-    if sock == null { return null }
+// Wrap an already-upgraded stdlib SSE connection as a Datastar handle,
+// for a caller that obtained one some other way. The handle does not own
+// the connection's lifetime beyond marking itself closed.
+sse_over_conn(conn: ptr) -> ptr {
+    if conn == null { return null }
     sse = heap.new(Sse)
-    sse.socket = sock
+    sse.conn = conn
     sse.closed = 0
     return sse as ptr
 }
 
-// The raw socket behind an SSE handle, for callers that need to write
-// something this SDK does not model.
-sse_socket(p: ptr) -> ptr {
+// The stdlib `HttpSseConn` behind a handle, for callers that want to
+// reach past this SDK — to `http.sse_send_id`, say.
+sse_conn(p: ptr) -> ptr {
     if p == null { return null }
     sse = p as *Sse
-    return sse.socket
+    return sse.conn
 }
 
 // 1 once the stream has been closed, by `sse_close` or by a failed write.
@@ -790,35 +844,89 @@ sse_close(p: ptr) {
     if p == null { return }
     sse = p as *Sse
     if sse.closed == 0 {
-        if sse.socket != null { tcp.close(sse.socket) }
+        if sse.conn != null { http.sse_close(sse.conn) }
         sse.closed = 1
     }
     heap.free(sse)
 }
 
-// Push a pre-built frame. Returns "" on success; a non-empty error marks
-// the stream closed, so a caller looping over events stops on the first
-// failure instead of writing into a dead socket.
-sse_send_frame(p: ptr, data: string) -> string {
+// Push one event. Returns "" on success; a non-empty error marks the
+// stream closed, so a caller looping over events stops on the first
+// failure instead of writing into a dead connection.
+//
+// `data_lines` is the list of already-prefixed datalines the frame
+// builders produce (`selector #x`, `elements <div>`, ...). They are
+// joined with newlines because `http.sse_send_full` splits its payload
+// on `\n` into one `data:` line each — so the list we build and the
+// lines that reach the wire correspond exactly.
+//
+// A frame with NO datalines writes nothing and reports success: the
+// stdlib would emit a bare `data: ` for an empty payload, where this
+// protocol emits no data line at all. No SDK verb produces that shape
+// (every one contributes at least one line), but the guard keeps the
+// wire format ours rather than inheriting a default we did not choose.
+sse_send_lines(p: ptr, event_type: string, data_lines: ptr, event_id: string, retry_ms: int) -> string {
     if p == null { return "no sse handle" }
     sse = p as *Sse
     if sse.closed == 1 { return "sse stream closed" }
-    if sse.socket == null { return "sse stream has no socket" }
+    if sse.conn == null { return "sse stream has no connection" }
 
-    // write_n, not write: a frame carries whatever HTML the caller passed,
-    // and the strlen-based write would truncate it at an embedded NUL.
-    _n, werr = tcp.write_n(sse.socket, data, string.length(data))
-    if werr != "" {
+    payload = join_datalines(data_lines)
+
+    // Only send `retry:` when it differs from the default the client
+    // already assumes — 0 tells the stdlib to omit the field.
+    retry_out = 0
+    if retry_ms > 0 && retry_ms != DEFAULT_SSE_RETRY_DURATION { retry_out = retry_ms }
+
+    rc = http.sse_send_full(sse.conn, event_type, payload, event_id, retry_out)
+    if rc != 0 {
         sse.closed = 1
-        return "failed to write to sse stream: ${werr}"
+        return "failed to write to sse stream"
     }
     return ""
+}
+
+// Join prefixed datalines into the payload `http.sse_send_full` splits
+// back apart. Returns "" for an empty or null list.
+fn join_datalines(data_lines: ptr) -> string {
+    if data_lines == null { return "" }
+    n = list.size(data_lines)
+    if n == 0 { return "" }
+
+    sb = strbuilder.new(256)
+    for (i = 0; i < n; i++) {
+        line, _ = list.get(data_lines, i)
+        if i > 0 { strbuilder.append(sb, NEWLINE) }
+        strbuilder.append(sb, line)
+    }
+    return strbuilder.finish(sb)
 }
 
 // Build and push one event from its parts. The escape hatch for event
 // types this SDK does not wrap.
 sse_send(p: ptr, event_type: string, data_lines: ptr, event_id: string, retry_ms: int) -> string {
-    return sse_send_frame(p, frame(event_type, data_lines, event_id, retry_ms))
+    return sse_send_lines(p, event_type, data_lines, event_id, retry_ms)
+}
+
+// The three send paths behind every verb below. Each builds its
+// datalines with the same function the wire-format tests assert on, then
+// hands them to the envelope.
+fn send_patch_elements(p: ptr, elements: string, opts: ptr) -> string {
+    rows, event_id, retry_ms = patch_elements_parts(elements, opts)
+    defer list.free(rows)
+    return sse_send_lines(p, EVENT_TYPE_PATCH_ELEMENTS, rows, event_id, retry_ms)
+}
+
+fn send_patch_signals(p: ptr, signals_json: string, opts: ptr) -> string {
+    rows, event_id, retry_ms = patch_signals_parts(signals_json, opts)
+    defer list.free(rows)
+    return sse_send_lines(p, EVENT_TYPE_PATCH_SIGNALS, rows, event_id, retry_ms)
+}
+
+fn send_execute_script(p: ptr, script: string, opts: ptr) -> string {
+    rows, event_id, retry_ms = execute_script_parts(script, opts)
+    defer list.free(rows)
+    return sse_send_lines(p, EVENT_TYPE_PATCH_ELEMENTS, rows, event_id, retry_ms)
 }
 
 // Send HTML elements for the client to patch into the DOM. `opts` may
@@ -831,7 +939,7 @@ sse_send(p: ptr, event_type: string, data_lines: ptr, event_id: string, retry_ms
 //     err = ds.patch_elements(sse, "<div>hi</div>", opts)
 //     ds.element_options_free(opts)
 patch_elements(p: ptr, elements: string, opts: ptr) -> string {
-    return sse_send_frame(p, patch_elements_frame(elements, opts))
+    return send_patch_elements(p, elements, opts)
 }
 
 // The trailing-block form, for when the options are only used once:
@@ -850,18 +958,18 @@ patch_elements(p: ptr, elements: string, opts: ptr) -> string {
 // was the only safe shape.
 builder patch_elements_with(p: ptr, elements: string): string with element_options_new {
     defer element_options_free(_builder)
-    return sse_send_frame(p, patch_elements_frame(elements, _builder))
+    return send_patch_elements(p, elements, _builder)
 }
 
 // Send a JSON signals payload for the client to merge into its store.
 patch_signals(p: ptr, signals_json: string, opts: ptr) -> string {
-    return sse_send_frame(p, patch_signals_frame(signals_json, opts))
+    return send_patch_signals(p, signals_json, opts)
 }
 
 // Trailing-block form. See `patch_elements_with`.
 builder patch_signals_with(p: ptr, signals_json: string): string with signal_options_new {
     defer signal_options_free(_builder)
-    return sse_send_frame(p, patch_signals_frame(signals_json, _builder))
+    return send_patch_signals(p, signals_json, _builder)
 }
 
 // `patch_signals` with onlyIfMissing forced on.
@@ -869,7 +977,7 @@ patch_signals_if_missing(p: ptr, signals_json: string) -> string {
     o = signal_options_new()
     defer signal_options_free(o)
     with_only_if_missing(o, 1)
-    return sse_send_frame(p, patch_signals_frame(signals_json, o))
+    return send_patch_signals(p, signals_json, o)
 }
 
 // Remove the elements matching `selector` from the DOM.
@@ -878,7 +986,7 @@ remove_element(p: ptr, selector: string) -> string {
     defer element_options_free(o)
     with_mode_remove(o)
     with_selector(o, selector)
-    return sse_send_frame(p, patch_elements_frame("", o))
+    return send_patch_elements(p, "", o)
 }
 
 // Sugar for `remove_element("#" + id)`.
@@ -889,35 +997,35 @@ remove_element_by_id(p: ptr, id: string) -> string {
 // Run a script in the client browser. `opts` may be null, or a bag from
 // `script_options`.
 execute_script(p: ptr, script: string, opts: ptr) -> string {
-    return sse_send_frame(p, execute_script_frame(script, opts))
+    return send_execute_script(p, script, opts)
 }
 
 // Trailing-block form. See `patch_elements_with`.
 builder execute_script_with(p: ptr, script: string): string with script_options_new {
     defer script_options_free(_builder)
-    return sse_send_frame(p, execute_script_frame(script, _builder))
+    return send_execute_script(p, script, _builder)
 }
 
 // `console.log(msg)` in the browser.
 console_log(p: ptr, msg: string) -> string {
-    return sse_send_frame(p, execute_script_frame("console.log(${json_quote(msg)})", null))
+    return send_execute_script(p, "console.log(${json_quote(msg)})", null)
 }
 
 // `console.error(msg)` in the browser.
 console_error(p: ptr, msg: string) -> string {
-    return sse_send_frame(p, execute_script_frame("console.error(${json_quote(msg)})", null))
+    return send_execute_script(p, "console.error(${json_quote(msg)})", null)
 }
 
 // Navigate the browser to `url`.
 redirect(p: ptr, url: string) -> string {
     js = "setTimeout(() => window.location.href = ${json_quote(url)})"
-    return sse_send_frame(p, execute_script_frame(js, null))
+    return send_execute_script(p, js, null)
 }
 
 // Replace the current URL in the browser's history without navigating.
 replace_url(p: ptr, url: string) -> string {
     js = "window.history.replaceState({}, \"\", ${json_quote(url)})"
-    return sse_send_frame(p, execute_script_frame(js, null))
+    return send_execute_script(p, js, null)
 }
 
 // Dispatch a CustomEvent on the client. `detail_json` is the event's
@@ -948,7 +1056,7 @@ dispatch_custom_event(p: ptr, event_name: string, detail_json: string, opts: ptr
     with_retry_duration(so, retry_ms)
 
     js = custom_event_script(event_name, detail_json, opts)
-    return sse_send_frame(p, execute_script_frame(js, so))
+    return send_execute_script(p, js, so)
 }
 
 // The JavaScript a `dispatch_custom_event` sends. Split out for the same
@@ -1024,7 +1132,7 @@ prefetch(p: ptr, urls: ptr) -> string {
     defer script_options_free(o)
     with_auto_remove(o, 0)
     with_script_attribute(o, "type=\"speculationrules\"")
-    return sse_send_frame(p, execute_script_frame(script, o))
+    return send_execute_script(p, script, o)
 }
 
 // ---------------------------------------------------------------------------
