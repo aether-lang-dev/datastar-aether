@@ -167,8 +167,8 @@ fn fill(d: ptr, num: string, mm: string, yy: string, sec: string) {
 fn type_into(d: ptr, id: string, text: string) {
     el = webdriver.find(d, webdriver.By_ID(), id)
     if string.length(el) == 0 { return }
-    _c = wd_extra.clear(d, el)
-    if string.length(text) > 0 { _s = wd_extra.send_keys(d, el, text) }
+    webdriver.clear(d, el)
+    if string.length(text) > 0 { webdriver.send_keys(d, el, text) }
 }
 
 fn submit(d: ptr) {

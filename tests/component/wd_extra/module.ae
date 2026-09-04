@@ -1,13 +1,13 @@
-// wd_extra — the two WebDriver verbs the Aether binding does not wrap yet,
-// plus the model-injection helper the UI Component Testing post argues for.
+// wd_extra — the model-injection helper the UI Component Testing post
+// argues for.
 //
-// `selenium_core` (the shared engine) already routes `sendKeysToElement`
-// and `clearElement`; `aether/webdriver.ae` just has no wrapper for them
-// yet. Rather than patch the Selenium repo from here, this reaches the
-// engine directly the same way the binding does — `selenium_core.execute`
-// with the command name and a JSON body.
+// This used to also carry `send_keys` and `clear`, on the belief that
+// `aether/webdriver.ae` had no wrappers for them. It does — both are
+// there and take the same arguments — so the copies are gone and the
+// suites call the binding directly. Worth knowing if you read an older
+// revision of this file: the workaround outlived its reason.
 //
-// The interesting one is `set_signals`. The post reaches for ngWebDriver:
+// What remains is `set_signals`. The post reaches for ngWebDriver:
 //
 //     ngWebDriver.mutate(formElement, "card",
 //         "{'num': 5105105105105100, 'expMM': 11, ...}")
@@ -18,26 +18,13 @@
 // so the equivalent is one `execute_script` that assigns to the signal
 // store. Same idea, no back door required.
 
-import selenium_core
 import webdriver
 import std.string
 import std.json
 
 exports(
-    send_keys, clear, set_signals, get_signal, wait_for_text
+    set_signals, get_signal, wait_for_text
 )
-
-// Type into an element. `text` is sent as a single-element text array,
-// which is the W3C shape for elementSendKeys.
-send_keys(sp: ptr, elem_id: string, text: string) -> int {
-    body = "{\"id\":${qs(elem_id)},\"text\":${qs(text)},\"value\":[${qs(text)}]}"
-    return exec(sp, "sendKeysToElement", body)
-}
-
-// Empty an input before typing into it.
-clear(sp: ptr, elem_id: string) -> int {
-    return exec(sp, "clearElement", "{\"id\":${qs(elem_id)}}")
-}
 
 // Push state straight into the component's model — the ngWebDriver.mutate
 // equivalent. `patch_json` is a JSON object merged into the signal store,
@@ -104,18 +91,6 @@ wait_for_text(sp: ptr, by: string, value: string, want: string, budget_ms: int) 
 }
 
 // --- internals -------------------------------------------------------------
-
-// The engine's Session handle lives at offset 0 of the binding's
-// WdSession struct; `webdriver.ae` keeps `engine` as its first field.
-struct WdSessionHead {
-    engine: ptr
-}
-
-fn exec(sp: ptr, cmd: string, body: string) -> int {
-    if sp == null { return -1 }
-    s = sp as *WdSessionHead
-    return selenium_core.execute(s.engine, cmd, body)
-}
 
 fn qs(s: string) -> string {
     v = json.json_create_string(s)
