@@ -55,8 +55,13 @@ fn run(d: ptr) -> int {
     fw = spec.init()
 
     spec.describe(fw, "card — validation (backend never called)") {
+        // Every test starts from a reset harness on a freshly loaded
+        // page. Registered once per group rather than called in each
+        // test: a `fresh(d)` a contributor forgets is a test that runs
+        // against the previous one's leftovers and fails somewhere else.
+        spec.before_each() callback { fresh(d) }
+
         spec.it("rejects an empty card number") callback {
-            fresh(d)
             fill(d, "", "11", "2031", "123")
             submit(d)
             expect(d, "invalid", "Card number is required")
@@ -64,7 +69,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("rejects a number that fails the Luhn check") callback {
-            fresh(d)
             fill(d, BAD_LUHN, "11", "2031", "123")
             submit(d)
             expect(d, "invalid", "Card number is not valid")
@@ -74,7 +78,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("rejects an out-of-range expiry month") callback {
-            fresh(d)
             fill(d, GOOD_PAN, "13", "2031", "123")
             submit(d)
             expect(d, "invalid", "Expiry month must be 01-12")
@@ -82,7 +85,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("rejects a two-digit security code") callback {
-            fresh(d)
             fill(d, GOOD_PAN, "11", "2031", "12")
             submit(d)
             expect(d, "invalid", "Security code must be 3 or 4 digits")
@@ -91,8 +93,13 @@ fn run(d: ptr) -> int {
     }
 
     spec.describe(fw, "card — backend outcomes") {
+        // Every test starts from a reset harness on a freshly loaded
+        // page. Registered once per group rather than called in each
+        // test: a `fresh(d)` a contributor forgets is a test that runs
+        // against the previous one's leftovers and fails somewhere else.
+        spec.before_each() callback { fresh(d) }
+
         spec.it("shows the auth code when the processor approves") callback {
-            fresh(d)
             backend("{\"outcome\":\"approve\",\"authCode\":\"AUTH-7\"}")
             fill(d, GOOD_PAN, "11", "2031", "123")
             submit(d)
@@ -101,7 +108,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("surfaces the processor's decline reason") callback {
-            fresh(d)
             backend("{\"outcome\":\"decline\",\"message\":\"Insufficient funds\"}")
             fill(d, GOOD_PAN, "11", "2031", "123")
             submit(d)
@@ -109,7 +115,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("surfaces a processor error as a decline") callback {
-            fresh(d)
             backend("{\"outcome\":\"error\",\"message\":\"processor timeout\"}")
             fill(d, GOOD_PAN, "11", "2031", "123")
             submit(d)
@@ -117,25 +122,37 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("shows a pending state while the processor is slow") callback {
-            fresh(d)
             // The one test that WANTS latency: long enough to observe the
             // intermediate state, short enough to stay fast.
-            backend("{\"outcome\":\"approve\",\"delayMs\":600}")
+            //
+            // 2s rather than 600ms. The window has to outlast the click
+            // round trip AND the first poll, and at 600ms it did not on a
+            // loaded machine — `pending` had already resolved before the
+            // first read, so the test failed claiming the component never
+            // showed it. That is a false accusation about the component,
+            // which is the worst kind of flake: it sends you debugging
+            // code that works.
+            backend("{\"outcome\":\"approve\",\"delayMs\":2000}")
             fill(d, GOOD_PAN, "11", "2031", "123")
             submit(d)
             spec.assert_eq(harness_fixture.wait_text(d, "card-status", "pending", 3000), 1,
                 "pending is visible while the processor works")
-            spec.assert_eq(harness_fixture.wait_text(d, "card-status", "approved", 3000), 1,
+            spec.assert_eq(harness_fixture.wait_text(d, "card-status", "approved", 4000), 1,
                 "and it resolves to approved")
         }
     }
 
     spec.describe(fw, "card — real typing") {
+        // Every test starts from a reset harness on a freshly loaded
+        // page. Registered once per group rather than called in each
+        // test: a `fresh(d)` a contributor forgets is a test that runs
+        // against the previous one's leftovers and fails somewhere else.
+        spec.before_each() callback { fresh(d) }
+
         // Everything above fills the form in one round trip. This one
         // types character by character, because the BINDING is what is
         // under test: if data-bind ever broke, only this would catch it.
         spec.it("binds each field as the user types") callback {
-            fresh(d)
             backend("{\"outcome\":\"approve\",\"authCode\":\"TYPED\"}")
             type_into(d, "card-num", GOOD_PAN)
             type_into(d, "card-exp-mm", "11")

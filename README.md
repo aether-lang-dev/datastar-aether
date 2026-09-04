@@ -146,20 +146,46 @@ task hello        # http://localhost:1337
 task hotreload    # http://localhost:9001
 ```
 
+## The component workbench
+
+```sh
+task harness      # http://127.0.0.1:4321/w
+```
+
+A component served alone shows one state: whatever it looks like on
+load. The states worth reviewing are the others — the decline, the empty
+result, the slow backend, the store that failed.
+
+A **story** names one of those and makes it a URL. Opening it resets the
+harness, applies the story's setup, and serves the component:
+
+| | |
+|---|---|
+| `/w` | every component, every story, with a note on why each is worth having |
+| `/w/card/declined` | one story, framed: notes, metadata, sibling states |
+| `/w/card/declined/raw` | the same story with no workbench chrome — what tests drive and screencasts record |
+
+Adding a story is one row in
+[`harness/stories/module.ae`](harness/stories/module.ae). The setup is
+posted to the same `/_harness/*` endpoints a test uses, so a story and a
+test configure the world identically — if stories had a private path
+they would stop being evidence about the real thing.
+
+Full rationale in [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
+
 ## Testing
 
 ```sh
-task test              # everything
+task test              # every offline suite
+task test-component    # the browser suites, against a fresh harness
 task test-conformance  # just the 20 upstream golden cases
 task test-unit         # just the SDK unit tests
 task test-streaming    # just the streaming integration check
+task test-tls          # just the HTTPS check
 ```
 
-Three layers, each covering what the others cannot:
+Five layers, each covering what the others cannot:
 
-- **TLS** — one frame over a real HTTPS connection (`task test-tls`).
-- **Workbench** — every story still puts its component into the state it
-  claims (`tests/component/test_workbench.ae`).
 - **Conformance** — the 20 upstream goldens, replayed offline.
 - **Units** — the API around the wire format: validators, option bags,
   convenience verbs, `url_decode`, `json_quote`.
@@ -167,6 +193,16 @@ Three layers, each covering what the others cannot:
   apart and times their arrival. A transport that buffered every event
   and flushed once at the end would pass all 20 goldens and be useless
   for what Datastar is for; this is the only check that sees it.
+- **TLS** — one frame through a real TLSv1.3 handshake. The transport
+  could not serve HTTPS at all until Aether 0.634.0, and nothing caught
+  it because every other suite speaks plain HTTP. Reverting the
+  transport makes this one fail with the original error.
+- **Component** — two components driven in a real browser, plus the
+  workbench's stories. See [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
+
+Suites are `std.spec`. A missing browser or harness **skips** locally and
+**fails** in CI — set `COMPONENT_TESTS_REQUIRED=1` there, because a skip
+that reports as a pass is how a suite quietly stops testing anything.
 
 `tests/golden/` is vendored from the Datastar monorepo and is the same
 oracle every Datastar SDK is measured against.
@@ -258,3 +294,14 @@ the defect was invisible precisely because nothing here spoke https.
 ## Contributing
 
 Contributions welcome. Please keep `task test` green.
+
+[LLM.md](LLM.md) maps the repo for anyone — human or model — picking it
+up cold: the layout, the one structural rule the SDK follows, and the
+traps that have actually cost time here (Datastar's colon-separated
+attributes, lowercase-only signal names, a stale server making a green
+run meaningless).
+
+Aether issues found while porting are logged in
+[`aether-issues.txt`](aether-issues.txt) with minimal reproducers.
+Several have been fixed upstream at this port's request; the
+correspondence is in [`asks/`](asks).

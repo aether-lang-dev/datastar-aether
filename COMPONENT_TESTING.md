@@ -251,6 +251,15 @@ of its tests go red.
   never compiled. Fixed in
   [aether#1886](https://github.com/aether-lang-dev/aether/pull/1886);
   the `rm -rf ~/.aether/cache` that every task used to do first is gone.
+- **A chrome process right after a run is teardown, not a leak.** Chrome
+  exits asynchronously, so a process count taken the instant a suite
+  returns can show 1 where a count a second later shows 0. This was
+  investigated at length on the strength of a `sleep 2` sample that
+  caught it mid-shutdown; four hypotheses (SSE keeping it alive, the
+  Datastar bundle, an interaction that opens a stream, multiple sessions
+  per process) were each tested and each disproved before the timing
+  itself turned out to be the artefact. If you measure this, sample
+  repeatedly and let it settle.
 - **Quitting the session does not stop the driver.** `webdriver.quit(d)`
   ends the browser; the `chromedriver` process that `driver.ensure`
   spawned keeps running, and nothing else holds a handle to it. Left

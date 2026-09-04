@@ -50,15 +50,19 @@ fn run(d: ptr) -> int {
     fw = spec.init()
 
     spec.describe(fw, "inbox — listing and filtering") {
+        // Reset, reseed and reload before every test in this group.
+        // Registered once rather than called in each test: a `fresh(d)`
+        // someone forgets is a test that runs against the previous
+        // one's corpus and fails somewhere else entirely.
+        spec.before_each() callback { fresh(d) }
+
         spec.it("lists every seeded message") callback {
-            fresh(d)
             search(d)
             expect_status(d, "ok", "3 message(s)")
             spec.assert_eq(item_count(d), 3, "three list items rendered")
         }
 
         spec.it("filters on sender and subject together") callback {
-            fresh(d)
             set_filter(d, "lunch")
             search(d)
             expect_status(d, "ok", "2 message(s)")
@@ -69,14 +73,12 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("filters case-insensitively") callback {
-            fresh(d)
             set_filter(d, "LUNCH")
             search(d)
             spec.assert_eq(item_count(d), 2, "uppercase filter matches too")
         }
 
         spec.it("restricts to unread when asked") callback {
-            fresh(d)
             check_unread(d)
             search(d)
             expect_status(d, "ok", "2 message(s)")
@@ -84,7 +86,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("marks unread messages in the markup") callback {
-            fresh(d)
             search(d)
             // The class is on the <li> the SERVER rendered, so this is an
             // assertion about SDK output that reached the DOM.
@@ -93,8 +94,13 @@ fn run(d: ptr) -> int {
     }
 
     spec.describe(fw, "inbox — empty and error states") {
+        // Reset, reseed and reload before every test in this group.
+        // Registered once rather than called in each test: a `fresh(d)`
+        // someone forgets is a test that runs against the previous
+        // one's corpus and fails somewhere else entirely.
+        spec.before_each() callback { fresh(d) }
+
         spec.it("says so when nothing matches") callback {
-            fresh(d)
             set_filter(d, "nothing-matches-this")
             search(d)
             expect_status(d, "empty", "No messages match")
@@ -102,7 +108,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("reports a store failure without clearing the list") callback {
-            fresh(d)
             search(d)
             spec.assert_eq(item_count(d), 3, "list populated first")
 
@@ -115,7 +120,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("recovers on the next search after a failure") callback {
-            fresh(d)
             seed("{\"failNext\":true}")
             search(d)
             expect_status(d, "error", "message store unavailable")
@@ -125,8 +129,13 @@ fn run(d: ptr) -> int {
     }
 
     spec.describe(fw, "inbox — what it asked the store") {
+        // Reset, reseed and reload before every test in this group.
+        // Registered once rather than called in each test: a `fresh(d)`
+        // someone forgets is a test that runs against the previous
+        // one's corpus and fails somewhere else entirely.
+        spec.before_each() callback { fresh(d) }
+
         spec.it("issues exactly one query per search") callback {
-            fresh(d)
             search(d)
             search(d)
             spec.assert_eq(harness_fixture.backend_calls("/_harness/queries"), 2,
@@ -134,7 +143,6 @@ fn run(d: ptr) -> int {
         }
 
         spec.it("passes the unread flag through to the store") callback {
-            fresh(d)
             check_unread(d)
             search(d)
             // The DOM shows two items either way; only the query log
