@@ -10,7 +10,6 @@ import std.http
 import std.json
 import std.os
 import webdriver
-import driver
 import wd_extra
 
 exports(
@@ -23,40 +22,30 @@ exports(
 
 const HARNESS = "http://127.0.0.1:4321"
 
-// The chromedriver process behind the current session.
-//
-// Held at module scope because `driver.ensure` spawns a real OS process
-// and hands back the only handle that can reap it, while the session
-// `webdriver.remote` returns knows nothing about it. Quitting the
-// session ends the BROWSER; it does not stop the DRIVER. Dropping this
-// handle leaks a chromedriver per run — 31 of them had accumulated on
-// this box before it was noticed, all with no browser attached.
-//
-// One suite runs one session at a time, so a single slot is enough.
-var _driver: ptr = null
-
 // Open a headed session, or null if none can be had.
 //
-// Headed on purpose: webdriver.remote() sends no chromeOptions, so
-// Chrome opens a real window. webdriver.chrome() would work too but
-// hardcodes --headless=new with no way to override it.
+// Headed on purpose: these tests exist to be watched and recorded, which
+// is the whole argument of the UI-component-testing approach. `chrome()`
+// resolves and launches the driver itself — detect, fetch, cache, launch,
+// with nothing on PATH — and its block now configures headedness.
+//
+// This used to be `driver.ensure` + `webdriver.remote`, because
+// `chrome()` hardcoded `--headless=new` with no override. That workaround
+// cost us a leak: the session `remote()` returns owns no driver, so the
+// chromedriver `ensure` spawned outlived every run, and 31 had piled up
+// before one hung. Both halves are fixed upstream now — `with_headless`
+// and, if you do need custom caps, `remote_owning(url, dh)` which hands
+// the handle to the session so `quit()` reaps it.
 open_browser() -> ptr {
-    dh = driver.ensure("chrome", "", 20000)
-    if dh == null { return null }
-    _driver = dh
-    return webdriver.remote(driver.url_of(dh))
+    return webdriver.chrome() {
+        webdriver.with_headless(0)
+    }
 }
 
-// End the session, then reap the driver process behind it. Order
-// matters: quitting the session first lets chromedriver shut its
-// browser down cleanly, so the SIGTERM lands on an idle process.
-// `driver.stop` is null-safe and safe once.
+// End the session. `quit` closes the browser AND reaps the driver process
+// `chrome()` started, so there is nothing else to track.
 close_browser(d: ptr) {
     if d != null { webdriver.quit(d) }
-    if _driver != null {
-        driver.stop(_driver)
-        _driver = null
-    }
 }
 
 // Decide what a missing browser or harness MEANS.

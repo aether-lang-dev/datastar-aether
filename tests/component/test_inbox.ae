@@ -168,11 +168,36 @@ fn check_unread(d: ptr) {
     _r = harness_fixture.click_fast(d, "inbox-unread")
 }
 
+// Click Search and wait for the component to finish.
+//
+// A click returns as soon as the handler fires; the SSE patch that fills
+// the list lands after. Most tests here then call wait_text, which does
+// the real waiting — but the two that COUNT elements read the DOM
+// directly, and a bare sleep left them racing the patch. They passed
+// until the browser got slower and then failed as "expected 2, got 0".
+//
+// So wait for a SETTLED status, not for "searching" to go away. The
+// difference matters: at the instant of the click the status is still
+// whatever it was before, so "not searching" is true immediately and the
+// wait returns having waited for nothing. Waiting for one of the terminal
+// states cannot pass early.
 fn search(d: ptr) {
     _r = harness_fixture.click_fast(d, "inbox-search")
-    // Give the patch a moment to land before the next assertion reads
-    // the DOM. wait_text on the status line does the real waiting.
-    sleep(60)
+    _done = webdriver.wait_until(d, 4000) callback |_| -> settled(status_text(d))
+}
+
+// The statuses the component publishes when a search has finished.
+fn settled(st: string) -> int {
+    if st == "ok" { return 1 }
+    if st == "empty" { return 1 }
+    if st == "error" { return 1 }
+    return 0
+}
+
+fn status_text(d: ptr) -> string {
+    el = webdriver.find(d, webdriver.By_ID(), "inbox-status")
+    if string.length(el) == 0 { return "" }
+    return webdriver.element_text(d, el)
 }
 
 fn expect_status(d: ptr, status: string, msg: string) {

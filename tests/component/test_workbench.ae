@@ -102,8 +102,8 @@ main() {
     spec.describe(fw, "workbench — the frame") {
         spec.it("offers an unframed view of the same story") callback {
             webdriver.get(d, "${wb()}/card/declined")
-            raw_el = webdriver.find(d, webdriver.By_ID(), "raw-link")
-            spec.assert_true(string.length(raw_el) > 0, "the framed page links to its raw view")
+            spec.assert_eq(webdriver.exists(d, webdriver.By_ID(), "raw-link"), 1,
+                "the framed page links to its raw view")
         }
 
         // The raw view is what tests and screen recordings use, so it must
@@ -123,8 +123,8 @@ main() {
 }
 
 fn expect_link(d: ptr, id: string) {
-    el = webdriver.find(d, webdriver.By_ID(), id)
-    spec.assert_true(string.length(el) > 0, "index links to ${id}")
+    spec.assert_eq(webdriver.exists(d, webdriver.By_ID(), id), 1,
+        "index links to ${id}")
 }
 
 fn pay_a_valid_card(d: ptr) {
@@ -145,19 +145,17 @@ fn search(d: ptr, term: string) {
     sleep(60)
 }
 
-// Type into a field, and FAIL if there is no such field.
+// Type into a field. `find_or_fail` aborts on a locator typo rather than
+// returning "".
 //
-// The silent-return version of this cost an hour: a story test typed
-// into `card-exp-yyyy` (the real id is `card-exp-yy`), the helper
-// returned quietly, the year stayed empty, validation blocked the
+// The quiet version of this cost an hour: a story test typed into
+// `card-exp-yyyy` (the real id is `card-exp-yy`), `find` returned "", the
+// helper skipped the field, the year stayed empty, validation blocked the
 // submit, and the failure surfaced as "the decline story produced no
-// decline" — pointing at the story rather than at the typo.
+// decline" — pointing at the component rather than at the typo. That
+// experience became one of the asks; `find_or_fail` is the answer.
 fn type_into(d: ptr, id: string, text: string) {
-    el = webdriver.find(d, webdriver.By_ID(), id)
-    if string.length(el) == 0 {
-        spec.fail("no element #${id} — the test and the component disagree about its id")
-        return
-    }
+    el = webdriver.find_or_fail(d, webdriver.By_ID(), id)
     webdriver.clear(d, el)
     if string.length(text) > 0 { webdriver.send_keys(d, el, text) }
 }
