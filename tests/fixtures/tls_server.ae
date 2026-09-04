@@ -1,0 +1,55 @@
+// Fixture: serve one Datastar event over HTTPS, then exit.
+//
+// This exists because of a defect that shipped silently. The SDK used
+// to take the raw socket with http.response_accept_tunnel, which
+// REFUSES a TLS-wrapped connection — so every endpoint it served was
+// plaintext-only, and no test caught it because the whole matrix was
+// plain HTTP. A user would have found it in production.
+//
+// The migration to http.response_upgrade_sse fixed it by writing
+// through the connection's own send path. This fixture is the proof,
+// and it is the test that would have caught the original defect.
+//
+// TLS_CERT / TLS_KEY are PEM paths; TLS_PORT where to listen.
+
+import std.os
+import std.string
+import contrib.tinyweb
+import datastar
+
+main() {
+    cert = os.getenv("TLS_CERT")
+    key = os.getenv("TLS_KEY")
+    if cert == "" || key == "" { return 1 }
+
+    port_s = os.getenv("TLS_PORT")
+    if port_s == "" { port_s = "47443" }
+    port, perr = string.to_int(port_s)
+    if perr != "" { return 1 }
+
+    server = tinyweb.web_server_host("127.0.0.1", port) {
+        tinyweb.end_point(tinyweb.GET, "/stream") |req: ptr, res: ptr, ctx: ptr| {
+            sse, uerr = datastar.new_sse(res)
+            if uerr != "" {
+                // The old transport failed exactly here on TLS.
+                println("UPGRADE FAILED: ${uerr}")
+                os.exit(2)
+            }
+            _e = datastar.patch_elements_with(sse, "<div id=\"m\">over tls</div>") {
+                datastar.with_selector("#target")
+                datastar.with_retry_duration(2000)
+            }
+            datastar.sse_close(sse)
+            os.exit(0)
+        }
+    }
+
+    // with_tls records the pair; tw_start applies it and reports a bad
+    // one as a start-up error rather than quietly serving plaintext.
+    _t = tinyweb.with_tls(server, cert, key)
+
+    serr = tinyweb.tw_start(server)
+    if serr != "" { println("START FAILED: ${serr}"); return 1 }
+    tinyweb.tw_stop(server)
+    return 0
+}

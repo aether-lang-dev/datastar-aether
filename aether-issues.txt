@@ -12,7 +12,7 @@ struct-literal `*T` field emitting `.` not `->`, `ae build -o` not
 creating its output directory, and `ae fmt` writing `i ++`. Closure
 shadowing was fixed on the 0.630.0 line.
 
-Item 4 (streaming compression) shipped in 0.633.0, and SSE
+Item 5 (streaming compression) shipped in 0.633.0, and SSE
 upgrade-in-place plus the `retry:` field shipped in 0.634.0 (#1899) —
 both asked for by this port.
 
@@ -26,7 +26,13 @@ so every endpoint was silently plaintext-only and no test caught it —
 the whole matrix is plain HTTP. Verified by the upstream Go runner:
 22/22 subtests against the migrated server.
 
-Streaming compression (item 4 below) is still NOT adopted. The API
+`tinyweb.with_tls` shipped in 0.635.0 and IS adopted: it made the HTTPS
+path testable in-tree, so tests/test_tls.ae now serves a frame through a
+real TLSv1.3 handshake. Reverting the transport to the old raw socket
+makes that test fail with the original error — which is the regression
+guard the defect never had.
+
+Streaming compression (item 5 below) is still NOT adopted. The API
 shipped and matches what was asked for, but nothing here uses it yet.
 
 
@@ -91,7 +97,55 @@ discovered by experiment.
 
 
 -----------------------------------------------------------------------
-2. `std.spec`: sibling `describe` blocks indent cumulatively
+2. A name declared inside a closure collides with a LATER outer one
+-----------------------------------------------------------------------
+
+Status:   open, easy workaround
+Severity: low — confusing diagnostic, comes from C rather than Aether
+Found:    2026-09-04, ae 0.635.0
+
+The near-sibling of the old issue #7 (a closure could not shadow a name
+from the enclosing scope), which IS fixed: declaring `err` inside a
+trailing-block closure when an `err` already exists ABOVE it now
+compiles. The remaining case is the other ordering — the closure
+declares the name first, and the enclosing function declares it AFTER
+the closure:
+
+    fn thing() -> (ptr, string) { return (null, "") }
+
+    main() {
+        server = tinyweb.web_server_host("127.0.0.1", 47998) {
+            tinyweb.end_point(tinyweb.GET, "/x") |req: ptr, res: ptr, ctx: ptr| {
+                h, serr = thing()          // inner `serr` FIRST
+                if serr != "" { return }   // error: 'serr' undeclared
+                if h == null { return }
+            }
+        }
+
+        serr = tinyweb.tw_start(server)     // outer `serr` declared LATER
+        if serr != "" { return 1 }
+        return 0
+    }
+
+    shadow2.ae:10: error: 'serr' undeclared (first use in this function);
+                          did you mean 'server'?
+
+Renaming either binding compiles (verified both ways), and moving the
+outer declaration ABOVE the closure also compiles — which is what
+localises it to the ordering rather than to the collision itself.
+
+Hit while writing tests/fixtures/tls_server.ae, where the natural
+spelling is `serr` for both the SSE upgrade inside the handler and the
+`tw_start` result after it. Worked around by renaming the inner one to
+`uerr`.
+
+As with #7, the diagnostic is a C error about generated code at a line
+that does not correspond to what gcc is describing, so a user who does
+not know Aether compiles via C has little to go on.
+
+
+-----------------------------------------------------------------------
+3. `std.spec`: sibling `describe` blocks indent cumulatively
 -----------------------------------------------------------------------
 
 Status:   open, cosmetic
@@ -125,7 +179,7 @@ Results are correct; only the layout is wrong.
 
 
 -----------------------------------------------------------------------
-3. A `builder` called with NO trailing block receives a null `_builder`
+4. A `builder` called with NO trailing block receives a null `_builder`
 -----------------------------------------------------------------------
 
 Status:   documented behaviour — changing it is a design decision, not
@@ -177,7 +231,7 @@ reader to infer it.
 
 
 -----------------------------------------------------------------------
-4. FEATURE REQUEST: streaming (incremental) deflate in `std.zlib`
+5. FEATURE REQUEST: streaming (incremental) deflate in `std.zlib`
 -----------------------------------------------------------------------
 
 Status:   BEING BUILT upstream, unreleased — not yet adoptable here

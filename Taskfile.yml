@@ -23,12 +23,14 @@ tasks:
       - ae run tests/test_conformance.ae
       - ae run tests/test_sdk.ae
       - task: test-streaming
+      - task: test-tls
 
   build-fixtures:
     desc: Build the fixtures the test suites spawn
     cmds:
       - ae build tests/fixtures/tick_server.ae
       - ae build -o target/once_server tests/fixtures/once_server.ae
+      - ae build -o target/tls_server tests/fixtures/tls_server.ae
 
   # Spawns a real server and times event arrival, so it is slower and
   # noisier than the pure suites — but it is the only check that the
@@ -38,6 +40,23 @@ tasks:
     deps: [build-fixtures]
     cmds:
       - ae run tests/test_streaming.ae
+
+  # The regression test for a defect that shipped silently: the old
+  # raw-socket transport could not serve TLS at all, and no other test
+  # here speaks https, so nothing caught it. Generates a throwaway
+  # self-signed pair — never reuse these anywhere real.
+  test-tls:
+    desc: Check the SSE transport works over HTTPS
+    deps: [build-fixtures]
+    cmds:
+      - mkdir -p target/tls
+      - |
+        if [ ! -f target/tls/cert.pem ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout target/tls/key.pem -out target/tls/cert.pem \
+            -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
+        fi
+      - TLS_CERT=target/tls/cert.pem TLS_KEY=target/tls/key.pem ae run tests/test_tls.ae
 
   test-conformance:
     desc: Run only the upstream SDK conformance goldens

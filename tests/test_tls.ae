@@ -1,0 +1,101 @@
+// Integration: the SSE transport works over HTTPS.
+//
+// This is the regression test for a defect that shipped silently. The
+// SDK used to seize the raw socket with http.response_accept_tunnel,
+// which REFUSES a TLS-wrapped connection:
+//
+//     if (conn->ssl || conn->pure_tls) return NULL;   // aether_http_server.c
+//
+// so every endpoint it served was plaintext-only. Nothing caught it,
+// because every other test in this repo speaks plain HTTP — the
+// conformance runner included. A user would have found it in
+// production, as a runtime error string, the first time they served
+// Datastar over https.
+//
+// Aether 0.634.0 added http.response_upgrade_sse (writes through the
+// connection's own send path) and 0.635.0 added tinyweb.with_tls, so
+// the whole path is now testable in-tree. That is what this does.
+//
+// Needs `target/tls_server` and a cert/key pair — `task test-tls`
+// generates a throwaway self-signed pair and builds the fixture.
+
+import std.spec
+import std.os
+import std.fs
+import std.file
+import std.string
+import std.list
+
+const PORT = 47443
+const SERVER = "target/tls_server"
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "SSE over HTTPS") {
+        spec.it("streams a Datastar frame through a TLS connection") callback {
+            check_tls()
+        }
+    }
+
+    return spec.run_summary(fw)
+}
+
+fn check_tls() {
+    cert = os.getenv("TLS_CERT")
+    key = os.getenv("TLS_KEY")
+    if cert == "" || key == "" {
+        spec.fail("TLS_CERT / TLS_KEY not set — run via `task test-tls`")
+        return
+    }
+    if fs.exists(cert) == 0 || fs.exists(key) == 0 {
+        spec.fail("cert or key missing (${cert}, ${key})")
+        return
+    }
+    if fs.exists(SERVER) == 0 {
+        spec.fail("fixture ${SERVER} not built — run `task build-fixtures`")
+        return
+    }
+
+    argv = list.new()
+    list.add(argv, SERVER)
+    env = list.new()
+    list.add(env, "TLS_CERT=${cert}")
+    list.add(env, "TLS_KEY=${key}")
+    list.add(env, "TLS_PORT=${PORT}")
+
+    token, serr = os.spawn_proc(SERVER, argv, env)
+    list.free(argv)
+    list.free(env)
+    if serr != "" { spec.fail("cannot spawn ${SERVER}: ${serr}"); return }
+
+    // curl does the TLS handshake. Writing a client handshake by hand
+    // would test our own TLS code rather than the server's, and `-k`
+    // only waives trust of the self-signed cert — the handshake, the
+    // cipher and the encrypted transport are all real.
+    out = "target/tls_out.txt"
+    rc = os.system("curl -sk --max-time 15 https://127.0.0.1:${PORT}/stream > ${out} 2>/dev/null")
+    _e, _w = os.wait(token)
+
+    if rc != 0 {
+        spec.fail("curl failed (rc=${rc}) — the TLS request did not complete")
+        return
+    }
+
+    body, rerr = file.read(out)
+    if rerr != "" { spec.fail("cannot read ${out}: ${rerr}"); return }
+
+    // The upgrade failing over TLS is the exact defect this guards, and
+    // the fixture prints this rather than streaming.
+    spec.assert_eq(string.contains(body, "UPGRADE FAILED"), 0,
+        "the response upgrade must succeed on a TLS connection")
+
+    spec.assert_true(string.contains(body, "event: datastar-patch-elements") == 1,
+        "the event line arrived over https")
+    spec.assert_true(string.contains(body, "data: selector #target") == 1,
+        "the selector dataline arrived over https")
+    spec.assert_true(string.contains(body, "data: elements <div id=\"m\">over tls</div>") == 1,
+        "the elements dataline arrived over https")
+    spec.assert_true(string.contains(body, "retry: 2000") == 1,
+        "the retry line — the field that made this transport adoptable — arrived over https")
+}

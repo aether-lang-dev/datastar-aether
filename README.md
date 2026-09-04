@@ -22,10 +22,10 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.634.0** or later, and `contrib.tinyweb` for the examples'
+Aether **0.635.0** or later, and `contrib.tinyweb` for the examples'
 routing (it ships with a standard Aether install).
 
-Four fixes this SDK depends on, all upstream:
+Four fixes and one feature this SDK depends on, all upstream:
 
 | version | what it fixed for us |
 |---|---|
@@ -33,6 +33,7 @@ Four fixes this SDK depends on, all upstream:
 | [0.630.0](https://github.com/aether-lang-dev/aether/pull/1886) | a stale-cache bug that let a suite report green against code it never compiled |
 | [0.631.0](https://github.com/aether-lang-dev/aether/pull/1888) | a value-returning builder running its body twice — for a send verb, every event went out twice |
 | [0.634.0](https://github.com/aether-lang-dev/aether/pull/1899) | SSE upgrade-in-place and the `retry:` field, which together let this SDK serve HTTPS |
+| [0.635.0](https://github.com/aether-lang-dev/aether/pull/1900) | `tinyweb.with_tls`, which made that HTTPS path testable in-tree |
 
 The SDK's core builds on older toolchains; the `*_with` verbs and the
 component tests do not.
@@ -156,6 +157,7 @@ task test-streaming    # just the streaming integration check
 
 Three layers, each covering what the others cannot:
 
+- **TLS** — one frame over a real HTTPS connection (`task test-tls`).
 - **Conformance** — the 20 upstream goldens, replayed offline.
 - **Units** — the API around the wire format: validators, option bags,
   convenience verbs, `url_decode`, `json_quote`.
@@ -242,8 +244,11 @@ built on it was silently plaintext-only. Aether 0.634.0 added both
 missing pieces at this port's request; see the
 [ask and reply](asks/sse-upgrade-in-place-REPLY.md).
 
-The practical consequence: **HTTPS works.** Writes go through the
-connection's own send path rather than a raw fd.
+The practical consequence: **HTTPS works**, and there is a test for it
+— `tests/test_tls.ae` serves a frame through a real TLSv1.3 handshake
+and asserts every dataline arrived. Reverting the transport to the old
+raw socket makes it fail with the original error, which is the point:
+the defect was invisible precisely because nothing here spoke https.
 
 **Aether issues found while porting** are logged in
 [`aether-issues.txt`](aether-issues.txt), with minimal reproducers.
