@@ -1,0 +1,362 @@
+// harness.workbench — the story browser.
+//
+// Serves three things:
+//
+//   GET /w              the index: every component, every story
+//   GET /w/<id>         one story, live, in a frame with its notes
+//   GET /w/<id>/raw     the same story with no workbench chrome
+//
+// The split between the last two matters more than it looks. The framed
+// view is for a person: sidebar, notes, links to sibling states. The raw
+// view is for a test — and for a screen recording, where workbench chrome
+// would be a distraction. Same story, same setup, same component; only
+// the surroundings differ, so what you review and what you record and
+// what a test drives cannot diverge.
+//
+// Applying a story means POSTing its setup to the same stub endpoint a
+// test uses. There is no private path into the stubs, which is what keeps
+// a story honest: if it renders, the real control surface produced it.
+
+import contrib.tinyweb
+import std.string
+import std.list
+import harness.page
+import harness.stories
+import harness.components.card
+import harness.components.inbox
+import harness.stub.cards
+import harness.stub.messages
+
+exports(mount, PATH)
+
+const PATH = "/w"
+
+mount(_ctx: ptr) {
+    // The index. Listed first so /w itself is never shadowed by a story
+    // route that happens to match.
+    tinyweb.end_point(_ctx, tinyweb.GET, PATH) | req: ptr, res: ptr, ctx: ptr | {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write(res, index_page())
+    }
+
+    // One route per story rather than one wildcard: tinyweb matches exact
+    // paths, and generating the routes from the same list the index reads
+    // means a story cannot appear in the index without being servable.
+    all = stories.all_stories()
+    n = list.size(all)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(all, i)
+        id = stories.story_field(row, 0)
+
+        tinyweb.end_point(_ctx, tinyweb.GET, "${PATH}/${id}") | req: ptr, res: ptr, ctx: ptr | {
+            serve_story(res, path_story_id(req), 1)
+        }
+
+        tinyweb.end_point(_ctx, tinyweb.GET, "${PATH}/${id}/raw") | req: ptr, res: ptr, ctx: ptr | {
+            serve_story(res, path_story_id(req), 0)
+        }
+    }
+    list.free(all)
+}
+
+// The story id from the request path: everything after "/w/", minus a
+// trailing "/raw". Read from the request rather than captured in the
+// closure because a trailing-block closure capturing a loop variable
+// would see whatever the loop finished on.
+fn path_story_id(req: ptr) -> string {
+    p = tinyweb.request_get_path(req)
+    if string.starts_with(p, "${PATH}/") == 0 { return "" }
+    rest = string.substring(p, string.length(PATH) + 1, string.length(p))
+    if string.ends_with(rest, "/raw") == 1 {
+        rest = string.substring(rest, 0, string.length(rest) - 4)
+    }
+    return rest
+}
+
+// Apply a story's setup, then render its component.
+fn serve_story(res: ptr, id: string, framed: int) {
+    row = stories.story_by_id(id)
+    if row == "" {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write_status(res, page.wrap("No such story",
+            "<h1>No story <code>${id}</code></h1><p><a href=\"${PATH}\">Back to the workbench</a></p>"), 404)
+        return
+    }
+
+    component = stories.story_field(row, 1)
+    title = stories.story_field(row, 2)
+    setup = stories.story_field(row, 3)
+    note = stories.story_field(row, 4)
+
+    // Every story starts from a clean world. Without this, opening two
+    // stories in sequence would show the second through the first's
+    // leftovers — the failure mode that makes a workbench untrustworthy.
+    cards.reset()
+    messages.reset()
+
+    err = apply_setup(component, setup)
+    if err != "" {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write_status(res, page.wrap("Story setup failed",
+            "<h1>${title}</h1><p>Setup was rejected: <code>${err}</code></p>
+<p>The story's setup JSON and the stub disagree — fix the story, not the stub.</p>"), 500)
+        return
+    }
+
+    body = component_fragment(component)
+
+    tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+    if framed == 0 {
+        tinyweb.response_write(res, page.wrap("${title} — ${component}", body))
+        return
+    }
+    tinyweb.response_write(res, framed_page(id, component, title, note, body))
+}
+
+// Route a story's setup to the stub that owns that component. An empty
+// setup is legitimate — "card/blank" wants the stub's own defaults.
+fn apply_setup(component: string, setup: string) -> string {
+    if setup == "" || setup == "{}" { return "" }
+    if component == "card" { return cards.configure(setup) }
+    if component == "inbox" { return messages.seed(setup) }
+    return "no stub for component '${component}'"
+}
+
+fn component_fragment(component: string) -> string {
+    if component == "card" { return card.fragment() }
+    if component == "inbox" { return inbox.fragment() }
+    return "<p>No such component: ${component}</p>"
+}
+
+// ---------------------------------------------------------------------------
+// Chrome
+// ---------------------------------------------------------------------------
+
+// The index: every component, every story, with its note. The notes are
+// the reason this is worth reading rather than just clicking through —
+// a story list with titles alone tells you the states exist; a story
+// list with notes tells you why each one is worth having.
+fn index_page() -> string {
+    cat = harness_components()
+    sb = ""
+    n = list.size(cat)
+    for (i = 0; i < n; i++) {
+        name, _ = list.get(cat, i)
+        sb = "${sb}${component_section(name)}"
+    }
+    list.free(cat)
+
+    total = stories.story_count()
+    return shell("Workbench", "",
+        "<header class=\"wb-head\">
+  <h1>Component workbench</h1>
+  <p class=\"wb-sub\">${total} states across ${n} components. Each one is a link: it resets the harness, configures the stub, and serves the component alone.</p>
+</header>
+${sb}
+<footer class=\"wb-foot\">
+  <p>Every story configures its stub through <code>/_harness/*</code> — the same control surface the Selenium suite uses. A story you can see is a state a test can drive.</p>
+</footer>")
+}
+
+fn component_section(name: string) -> string {
+    rows = stories.stories_for(name)
+    items = ""
+    n = list.size(rows)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(rows, i)
+        id = stories.story_field(row, 0)
+        title = stories.story_field(row, 2)
+        note = stories.story_field(row, 4)
+        items = "${items}    <li class=\"wb-story\">
+      <a id=\"story-${slug(id)}\" href=\"${PATH}/${id}\">${title}</a>
+      <span class=\"wb-note\">${note}</span>
+    </li>\n"
+    }
+    list.free(rows)
+
+    return "<section class=\"wb-section\">
+  <h2>${name}</h2>
+  <ul class=\"wb-list\">
+${items}  </ul>
+</section>\n"
+}
+
+// One story, framed: the component itself, plus what it is and how to
+// reach it without the frame.
+fn framed_page(id: string, component: string, title: string, note: string, body: string) -> string {
+    return shell("${title} — ${component}", id,
+        "<div class=\"wb-frame\">
+  <aside class=\"wb-side\">
+    <p class=\"wb-back\"><a href=\"${PATH}\">&larr; all stories</a></p>
+    <h1 class=\"wb-title\">${title}</h1>
+    <p class=\"wb-note wb-note-lg\">${note}</p>
+    <dl class=\"wb-meta\">
+      <dt>component</dt><dd>${component}</dd>
+      <dt>story</dt><dd><code>${id}</code></dd>
+      <dt>unframed</dt><dd><a id=\"raw-link\" href=\"${PATH}/${id}/raw\">/w/${id}/raw</a></dd>
+    </dl>
+    ${sibling_list(component, id)}
+  </aside>
+  <main class=\"wb-stage\" id=\"wb-stage\">
+${body}
+  </main>
+</div>")
+}
+
+// The other states of the same component, so moving between them is one
+// click. This is what turns a story list into a review tool: you compare
+// the decline against the approval without going back to an index.
+fn sibling_list(component: string, current: string) -> string {
+    rows = stories.stories_for(component)
+    items = ""
+    n = list.size(rows)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(rows, i)
+        id = stories.story_field(row, 0)
+        title = stories.story_field(row, 2)
+        cls = "wb-sib"
+        if id == current { cls = "wb-sib wb-sib-on" }
+        items = "${items}      <li class=\"${cls}\"><a href=\"${PATH}/${id}\">${title}</a></li>\n"
+    }
+    list.free(rows)
+    return "<h3 class=\"wb-sib-h\">other states</h3>\n    <ul class=\"wb-sibs\">\n${items}    </ul>"
+}
+
+// Components that have at least one story, in the order stories declares
+// them — derived from the story list rather than kept alongside it, so a
+// new component appears here the moment it has a story.
+fn harness_components() -> ptr {
+    seen = list.new()
+    all = stories.all_stories()
+    n = list.size(all)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(all, i)
+        c = stories.story_field(row, 1)
+        if contains_str(seen, c) == 0 { list.add(seen, string.concat(c, "")) }
+    }
+    list.free(all)
+    return seen
+}
+
+fn contains_str(l: ptr, want: string) -> int {
+    n = list.size(l)
+    for (i = 0; i < n; i++) {
+        v, _ = list.get(l, i)
+        if v == want { return 1 }
+    }
+    return 0
+}
+
+// "card/declined" -> "card-declined", for a usable element id.
+fn slug(id: string) -> string {
+    out = ""
+    n = string.length(id)
+    for (i = 0; i < n; i++) {
+        ch = string.substring(id, i, i + 1)
+        if ch == "/" { out = "${out}-" } else { out = "${out}${ch}" }
+    }
+    return out
+}
+
+// The workbench's own page shell.
+//
+// Separate from `harness.page` on purpose. That shell is deliberately
+// bare so a component test measures the component and not the chrome;
+// this one is the chrome. Keeping them apart means the workbench can look
+// like a tool without any of it leaking into the surface under test — the
+// raw view uses `harness.page`, so what a test drives has no workbench
+// CSS in it at all.
+fn shell(title: string, story_id: string, content: string) -> string {
+    return "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<title>${title} · workbench</title>
+<script type=\"module\" src=\"${page.DATASTAR_BUNDLE}\"></script>
+<style>
+  :root {
+    --bg: #fbfbfd; --panel: #fff; --ink: #14161a; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --accent-soft: #eff4ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --panel: #161a20; --ink: #e8eaed; --muted: #9aa3af;
+      --line: #262b33; --accent: #7aa2ff; --accent-soft: #1b2437;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .wb-head { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 1rem; }
+  .wb-head h1 { margin: 0; font-size: 1.9rem; letter-spacing: -.02em; }
+  .wb-sub { margin: .4rem 0 0; color: var(--muted); }
+
+  .wb-section { max-width: 62rem; margin: 0 auto; padding: 1.25rem 1.5rem 0; }
+  .wb-section h2 {
+    margin: 1.5rem 0 .6rem; font-size: .78rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
+  }
+  .wb-list { list-style: none; margin: 0; padding: 0;
+             border: 1px solid var(--line); border-radius: 10px;
+             background: var(--panel); overflow: hidden; }
+  .wb-story { display: grid; grid-template-columns: 12rem 1fr; gap: 1rem;
+              padding: .7rem 1rem; border-top: 1px solid var(--line); }
+  .wb-story:first-child { border-top: 0; }
+  .wb-story:hover { background: var(--accent-soft); }
+  .wb-story a { font-weight: 600; }
+  .wb-note { color: var(--muted); font-size: .9rem; }
+  .wb-note-lg { font-size: .95rem; margin: .5rem 0 1.25rem; }
+
+  .wb-foot { max-width: 62rem; margin: 2rem auto 3rem; padding: 0 1.5rem;
+             color: var(--muted); font-size: .875rem; }
+
+  .wb-frame { display: grid; grid-template-columns: 19rem 1fr; min-height: 100vh; }
+  .wb-side { background: var(--panel); border-right: 1px solid var(--line);
+             padding: 1.5rem 1.25rem; }
+  .wb-back { margin: 0 0 1.25rem; font-size: .875rem; }
+  .wb-title { margin: 0; font-size: 1.2rem; letter-spacing: -.01em; }
+  .wb-meta { margin: 0 0 1.5rem; font-size: .82rem; }
+  .wb-meta dt { color: var(--muted); text-transform: uppercase;
+                letter-spacing: .07em; font-size: .68rem; margin-top: .7rem; }
+  .wb-meta dd { margin: .15rem 0 0; }
+  .wb-sib-h { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em;
+              color: var(--muted); margin: 0 0 .4rem; }
+  .wb-sibs { list-style: none; margin: 0; padding: 0; font-size: .9rem; }
+  .wb-sib { padding: .25rem 0; }
+  .wb-sib-on a { color: var(--ink); font-weight: 700; }
+  .wb-sib-on a::before { content: '▸ '; color: var(--accent); }
+
+  /* The stage holds the real component. It gets a plain white card and
+     nothing else — no workbench typography inherited into the thing
+     under review, or the workbench would be flattering its own output. */
+  .wb-stage { padding: 2rem; }
+  .wb-stage > * { background: var(--panel); border: 1px solid var(--line);
+                  border-radius: 12px; padding: 1.5rem 1.75rem; max-width: 34rem; }
+  .wb-stage label { display: block; margin-top: .75rem; font-weight: 600; }
+  .wb-stage input { font: inherit; padding: .35rem .5rem; border: 1px solid var(--line);
+                    border-radius: 6px; background: var(--bg); color: var(--ink); }
+  .wb-stage button { font: inherit; margin-top: 1rem; padding: .45rem 1.1rem;
+                     border: 1px solid var(--accent); background: var(--accent);
+                     color: #fff; border-radius: 7px; cursor: pointer; }
+  .wb-stage ul { padding-left: 1.2rem; }
+  .wb-stage .unread { font-weight: 700; }
+
+  @media (max-width: 52rem) {
+    .wb-frame { grid-template-columns: 1fr; }
+    .wb-side { border-right: 0; border-bottom: 1px solid var(--line); }
+    .wb-story { grid-template-columns: 1fr; gap: .15rem; }
+  }
+</style>
+</head>
+<body data-story=\"${story_id}\">
+${content}
+</body>
+</html>"
+}

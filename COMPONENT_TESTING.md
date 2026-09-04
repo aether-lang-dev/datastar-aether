@@ -188,6 +188,47 @@ the stub to be slow on purpose. Reusing the page between tests — reset
 signals rather than re-navigate — is the next lever, and is left undone
 because navigation is also what guarantees test isolation.
 
+## The workbench
+
+`task harness`, then open <http://127.0.0.1:4321/w>.
+
+A component served alone shows one state: whatever it looks like on load.
+The states worth reviewing are the others — the decline, the empty result,
+the slow backend, the store that failed. Reaching those by hand means typing
+into the component and configuring its stub every time, which is why they
+usually go unreviewed.
+
+A **story** names one of those states and makes it a URL:
+
+    /w/card/declined      the card component, processor set to decline
+    /w/inbox/empty        the inbox with an empty corpus
+    /w/card/declined/raw  the same, with no workbench chrome
+
+Opening it resets the harness, applies the story's setup, and serves the
+component. So a state is a link: shareable in a review, bookmarkable while
+working, and drivable by a test that wants to start somewhere other than the
+beginning.
+
+**Adding a story is one line** in `harness/stories/module.ae`:
+
+    id | component | title | setup-json | note
+
+The setup JSON is posted to the same `/_harness/*` endpoint a test uses.
+That is deliberate — if stories had a private path into the stubs they would
+stop being evidence about the real thing.
+
+Two views on purpose. The framed one (`/w/<id>`) is for a person: notes,
+metadata, one-click navigation between sibling states. The raw one
+(`/w/<id>/raw`) is for a test and for a screen recording, where workbench
+chrome would be a distraction. Same story, same setup, same component — so
+what you review, what you record and what a test drives cannot diverge.
+
+`tests/component/test_workbench.ae` checks that every story still does what
+it claims. Not that the page loads — a story whose setup silently failed
+still serves a 200 and a component — but that driving the component produces
+the promised outcome. Mutation-tested: stop applying story setup and three
+of its tests go red.
+
 ## Notes for whoever runs this next
 
 - **Datastar attribute syntax is colon-separated**: `data-on:click`,

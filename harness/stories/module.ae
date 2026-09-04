@@ -1,0 +1,112 @@
+// harness.stories — named states of a component, each one a URL.
+//
+// A component alone shows one state: whatever it looks like on load. Most
+// of what is worth reviewing is the OTHER states — the decline, the empty
+// result, the slow backend, the error the store returned. Reaching those
+// by hand means typing into the component and configuring its stub every
+// time, which is why they usually go unreviewed.
+//
+// A story names one of those states and makes it addressable:
+//
+//     /w/card/declined     the card component, processor set to decline
+//     /w/inbox/empty       the inbox with an empty corpus
+//
+// Opening that URL resets the harness, applies the story's stub setup,
+// and serves the component. So a state is a link — shareable in review,
+// bookmarkable while working, and drivable by a test that wants to start
+// somewhere other than the beginning.
+//
+// This is the Storybook idea kept to what it is for: the story list IS
+// the component's specification, written as states rather than prose.
+// Everything is server-rendered, so there is no build step, no bundler,
+// and a story cannot drift from the component the way a screenshot in a
+// wiki does.
+//
+// A story is a row: id | component | title | setup-json | note
+//
+// `setup-json` is posted to the component's own stub before rendering —
+// the same endpoint a test uses, so a story and a test configure the
+// world identically. That is deliberate: if stories used a private path
+// they would stop being evidence about the real thing.
+
+import std.string
+import std.list
+
+exports(all_stories, stories_for, story_by_id, story_field, story_count)
+
+// Every story, in the order they should be read: the happy path first,
+// then the edges, then the failures. That ordering is the point — a
+// reader scanning the list sees the component's whole behaviour.
+all_stories() -> ptr {
+    l = list.new()
+
+    // --- card -------------------------------------------------------
+    list.add(l, "card/blank|card|Empty form|{}|How the component arrives. Nothing entered, nothing asked of the processor yet.")
+    list.add(l, "card/approved|card|Approved|{\"outcome\":\"approve\",\"authCode\":\"OK123\"}|The happy path. A valid card, and the processor approves it.")
+    list.add(l, "card/declined|card|Declined|{\"outcome\":\"decline\",\"message\":\"Insufficient funds\"}|The processor says no, and the component must surface its reason rather than a generic failure.")
+    list.add(l, "card/error|card|Processor error|{\"outcome\":\"error\",\"message\":\"processor timeout\"}|The backend breaks. A component that shows nothing here is the bug this story exists to catch.")
+    list.add(l, "card/slow|card|Slow processor|{\"outcome\":\"approve\",\"authCode\":\"SLOW1\",\"delayMs\":1200}|1.2s of latency, so the pending state is long enough to look at.")
+
+    // --- inbox ------------------------------------------------------
+    list.add(l, "inbox/full|inbox|Full inbox|{\"messages\":[{\"sender\":\"Ana\",\"subject\":\"Lunch?\",\"unread\":true},{\"sender\":\"Bo\",\"subject\":\"Deploy notes\",\"unread\":false},{\"sender\":\"Cy\",\"subject\":\"Re: lunch\",\"unread\":true},{\"sender\":\"Di\",\"subject\":\"Invoice 44\",\"unread\":false}]}|Four messages, two unread. The default view.")
+    list.add(l, "inbox/empty|inbox|Empty corpus|{\"messages\":[]}|No messages at all. Distinct from 'your filter matched nothing', and often rendered identically by mistake.")
+    list.add(l, "inbox/one|inbox|Single message|{\"messages\":[{\"sender\":\"Ana\",\"subject\":\"Lunch?\",\"unread\":true}]}|One row. Catches layout that only works with several, and copy that says 'messages' unconditionally.")
+    list.add(l, "inbox/failing|inbox|Store failure|{\"messages\":[{\"sender\":\"Ana\",\"subject\":\"Lunch?\",\"unread\":true}],\"failNext\":true}|The next query fails. The list must not be cleared by an error — losing what the user was reading is worse than the error.")
+    list.add(l, "inbox/slow|inbox|Slow store|{\"messages\":[{\"sender\":\"Ana\",\"subject\":\"Lunch?\",\"unread\":true},{\"sender\":\"Bo\",\"subject\":\"Deploy notes\",\"unread\":false}],\"delayMs\":900}|Nearly a second per query, so the searching state is observable.")
+
+    return l
+}
+
+// The stories belonging to one component, in declaration order. Rows are
+// owned copies, so the caller frees the list and the strings with it.
+stories_for(component: string) -> ptr {
+    out = list.new()
+    all = all_stories()
+    n = list.size(all)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(all, i)
+        if story_field(row, 1) == component { list.add(out, string.concat(row, "")) }
+    }
+    list.free(all)
+    return out
+}
+
+// One story by its id ("card/declined"), or "" if there is no such story.
+// Returned as an owned copy, since the backing list is freed here.
+story_by_id(id: string) -> string {
+    all = all_stories()
+    found = ""
+    n = list.size(all)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(all, i)
+        if story_field(row, 0) == id { found = string.concat(row, ""); break }
+    }
+    list.free(all)
+    return found
+}
+
+story_count() -> int {
+    all = all_stories()
+    n = list.size(all)
+    list.free(all)
+    return n
+}
+
+// The nth pipe-separated field of a story row:
+//   0 id | 1 component | 2 title | 3 setup-json | 4 note
+//
+// Pipe-separated rather than JSON because the setup payload is itself
+// JSON, and nesting one inside the other would mean escaping every quote
+// in every story — exactly the friction that stops people adding them.
+story_field(row: string, index: int) -> string {
+    start = 0
+    n = string.length(row)
+    for (f = 0; f < index; f++) {
+        at = string.index_of_from(row, "|", start)
+        if at < 0 { return "" }
+        start = at + 1
+    }
+    end = string.index_of_from(row, "|", start)
+    if end < 0 { end = n }
+    return string.substring(row, start, end)
+}

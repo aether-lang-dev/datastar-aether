@@ -1,0 +1,163 @@
+// The workbench, driven through a real browser.
+//
+// A story list is only worth having if every story still works. This is
+// the check that they do — not that they render, but that each one
+// actually put the world into the state it claims.
+//
+// That distinction matters. A story whose setup silently failed still
+// serves a 200 and a component, so "the page loaded" proves nothing. So
+// each test here drives the component the way a user would and asserts on
+// the OUTCOME the story promises: the decline story must produce the
+// decline message, the empty story must produce the empty state.
+//
+// Cheap to extend: a new story needs one `it` here, or none at all if
+// the sweep below is enough for it.
+
+import std.spec
+import std.string
+import webdriver
+import harness_fixture
+
+// The workbench root. A plain function rather than a const:
+// a const initialiser must be a compile-time constant, and this
+// interpolates the fixture's harness URL.
+fn wb() -> string { return "${harness_fixture.HARNESS}/w" }
+
+main() {
+    fw = spec.init()
+    d = harness_fixture.open_browser()
+
+    stop = harness_fixture.require_browser(d)
+    if stop != "" {
+        spec.describe(fw, "workbench") {
+            spec.it("needs a browser and a harness") callback { spec.fail(stop) }
+        }
+        harness_fixture.close_browser(d)
+        return spec.run_summary(fw)
+    }
+
+    spec.describe(fw, "workbench — the index") {
+        spec.it("lists every story with a link") callback {
+            webdriver.get(d, wb())
+            // One link per story, addressed by the id the index gives it.
+            expect_link(d, "story-card-blank")
+            expect_link(d, "story-card-declined")
+            expect_link(d, "story-inbox-full")
+            expect_link(d, "story-inbox-failing")
+        }
+    }
+
+    spec.describe(fw, "workbench — stories configure the world") {
+        // The point of the whole thing: opening a URL puts the component
+        // into the named state, with no test-side setup at all.
+        spec.it("card/declined makes the processor decline") callback {
+            webdriver.get(d, "${wb()}/card/declined/raw")
+            pay_a_valid_card(d)
+            spec.assert_true(
+                harness_fixture.wait_text(d, "card-message", "Insufficient funds", 4000) == 1,
+                "the decline story produced the decline reason")
+        }
+
+        spec.it("card/approved makes the processor approve, with the story's code") callback {
+            webdriver.get(d, "${wb()}/card/approved/raw")
+            pay_a_valid_card(d)
+            spec.assert_true(
+                harness_fixture.wait_text(d, "card-message", "OK123", 4000) == 1,
+                "the approval story's own auth code came back")
+        }
+
+        spec.it("inbox/full seeds a corpus the component can search") callback {
+            webdriver.get(d, "${wb()}/inbox/full/raw")
+            search(d, "")
+            spec.assert_true(
+                harness_fixture.wait_text(d, "inbox-message", "4 message", 4000) == 1,
+                "all four seeded messages came back")
+        }
+
+        spec.it("inbox/empty seeds nothing") callback {
+            webdriver.get(d, "${wb()}/inbox/empty/raw")
+            search(d, "")
+            spec.assert_true(
+                harness_fixture.wait_text(d, "inbox-message", "No messages", 4000) == 1,
+                "the empty story really is empty")
+        }
+
+        // Isolation is the property that makes a workbench trustworthy:
+        // whatever the last story did must not leak into this one. Loading
+        // a four-message story and then a one-message story in the same
+        // browser is the cheapest way to prove the reset runs.
+        spec.it("a story resets whatever the previous one set up") callback {
+            webdriver.get(d, "${wb()}/inbox/full/raw")
+            search(d, "")
+            _seen = harness_fixture.wait_text(d, "inbox-message", "4 message", 4000)
+
+            webdriver.get(d, "${wb()}/inbox/one/raw")
+            search(d, "")
+            spec.assert_true(
+                harness_fixture.wait_text(d, "inbox-message", "1 message", 4000) == 1,
+                "the four-message corpus did not survive into the next story")
+        }
+    }
+
+    spec.describe(fw, "workbench — the frame") {
+        spec.it("offers an unframed view of the same story") callback {
+            webdriver.get(d, "${wb()}/card/declined")
+            raw_el = webdriver.find(d, webdriver.By_ID(), "raw-link")
+            spec.assert_true(string.length(raw_el) > 0, "the framed page links to its raw view")
+        }
+
+        // The raw view is what tests and screen recordings use, so it must
+        // carry none of the workbench's own chrome.
+        spec.it("the unframed view has no workbench chrome") callback {
+            webdriver.get(d, "${wb()}/card/declined/raw")
+            markup = webdriver.page_source(d)
+            spec.assert_eq(string.contains(markup, "wb-side"), 0,
+                "the raw view is the component alone")
+            spec.assert_true(string.contains(markup, "card-component") == 1,
+                "...but it is still the component")
+        }
+    }
+
+    harness_fixture.close_browser(d)
+    return spec.run_summary(fw)
+}
+
+fn expect_link(d: ptr, id: string) {
+    el = webdriver.find(d, webdriver.By_ID(), id)
+    spec.assert_true(string.length(el) > 0, "index links to ${id}")
+}
+
+fn pay_a_valid_card(d: ptr) {
+    type_into(d, "card-num", "4242424242424242")
+    type_into(d, "card-exp-mm", "11")
+    type_into(d, "card-exp-yy", "2030")
+    type_into(d, "card-sec", "123")
+    _r = harness_fixture.click_fast(d, "card-submit")
+    sleep(60)
+}
+
+fn search(d: ptr, term: string) {
+    type_into(d, "inbox-filter", term)
+    _r = harness_fixture.click_fast(d, "inbox-search")
+    // The click returns as soon as the handler fires; the SSE patch that
+    // fills the list lands after. wait_text does the real waiting, but
+    // without this the first poll reads a DOM that has not changed yet.
+    sleep(60)
+}
+
+// Type into a field, and FAIL if there is no such field.
+//
+// The silent-return version of this cost an hour: a story test typed
+// into `card-exp-yyyy` (the real id is `card-exp-yy`), the helper
+// returned quietly, the year stayed empty, validation blocked the
+// submit, and the failure surfaced as "the decline story produced no
+// decline" — pointing at the story rather than at the typo.
+fn type_into(d: ptr, id: string, text: string) {
+    el = webdriver.find(d, webdriver.By_ID(), id)
+    if string.length(el) == 0 {
+        spec.fail("no element #${id} — the test and the component disagree about its id")
+        return
+    }
+    webdriver.clear(d, el)
+    if string.length(text) > 0 { webdriver.send_keys(d, el, text) }
+}

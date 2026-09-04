@@ -3,7 +3,7 @@ name = "datastar-aether"
 version = "0.1.0"
 license = "MIT"
 description = "Aether SDK for Datastar — hypermedia-driven UIs over SSE"
-repository = "https://github.com/paul-hammant/datastar-aether"
+repository = "https://github.com/aether-lang-dev/datastar-aether"
 readme = "README.md"
 keywords = ["datastar", "sse", "hypermedia", "web"]
 

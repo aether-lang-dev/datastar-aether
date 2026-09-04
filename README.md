@@ -158,6 +158,8 @@ task test-streaming    # just the streaming integration check
 Three layers, each covering what the others cannot:
 
 - **TLS** — one frame over a real HTTPS connection (`task test-tls`).
+- **Workbench** — every story still puts its component into the state it
+  claims (`tests/component/test_workbench.ae`).
 - **Conformance** — the 20 upstream goldens, replayed offline.
 - **Units** — the API around the wire format: validators, option bags,
   convenience verbs, `url_decode`, `json_quote`.
