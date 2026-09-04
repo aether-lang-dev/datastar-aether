@@ -27,7 +27,7 @@ main() {
             for (i = 0; i < n; i++) {
                 m, _ = list.get(modes, i)
                 got, err = datastar.element_patch_mode_from_string(m)
-                spec.assert_str_eq(err, "", "mode '${m}' is accepted")
+                spec.assert_ok(err, "mode '${m}' is accepted")
                 spec.assert_str_eq(got, m, "mode '${m}' round-trips")
             }
             list.free(modes)
@@ -35,12 +35,12 @@ main() {
 
         spec.it("rejects the empty string") callback {
             _m, err = datastar.element_patch_mode_from_string("")
-            spec.assert_true(err != "", "empty string is rejected")
+            spec.assert_err(err, "empty string is rejected")
         }
 
         spec.it("rejects an unknown mode") callback {
             _m, err = datastar.element_patch_mode_from_string("fakeType")
-            spec.assert_true(err != "", "'fakeType' is rejected")
+            spec.assert_err(err, "'fakeType' is rejected")
         }
     }
 
@@ -52,7 +52,7 @@ main() {
             for (i = 0; i < n; i++) {
                 ns, _ = list.get(namespaces, i)
                 got, err = datastar.namespace_from_string(ns)
-                spec.assert_str_eq(err, "", "namespace '${ns}' is accepted")
+                spec.assert_ok(err, "namespace '${ns}' is accepted")
                 spec.assert_str_eq(got, ns, "namespace '${ns}' round-trips")
             }
             list.free(namespaces)
@@ -60,7 +60,7 @@ main() {
 
         spec.it("rejects an unknown namespace") callback {
             _n, err = datastar.namespace_from_string("xhtml")
-            spec.assert_true(err != "", "'xhtml' is rejected")
+            spec.assert_err(err, "'xhtml' is rejected")
         }
     }
 
@@ -291,7 +291,7 @@ main() {
     spec.describe(fw, "custom events") {
         spec.it("rejects an empty event name") callback {
             err = datastar.dispatch_custom_event(null, "", "{}", null)
-            spec.assert_str_eq(err, "eventName is required", "name is mandatory")
+            spec.assert_err_contains(err, "eventName is required", "name is mandatory")
         }
 
         spec.it("targets the document by default") callback {
@@ -433,7 +433,7 @@ main() {
             defer list.free(rows)
             list.add(rows, "elements <div/>")
             err = datastar.sse_send_lines(null, "datastar-patch-elements", rows, "", 0)
-            spec.assert_true(err != "", "writing to nothing is an error, not a crash")
+            spec.assert_err(err, "writing to nothing is an error, not a crash")
         }
 
         spec.it("tolerates closing nothing") callback {
@@ -445,7 +445,7 @@ main() {
     spec.describe(fw, "signal reading") {
         spec.it("reports a null request") callback {
             _v, err = datastar.read_signals(null)
-            spec.assert_true(err != "", "a null request is an error")
+            spec.assert_err(err, "a null request is an error")
         }
     }
 

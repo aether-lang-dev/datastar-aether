@@ -57,19 +57,16 @@ close_browser(d: ptr) {
 //
 // So: set COMPONENT_TESTS_REQUIRED=1 in CI. Returns "" when the suite
 // should run, or a reason to stop.
+// Why this suite cannot run, or "" if it can.
+//
+// Reports the REASON only; whether that reason is a skip or a failure is
+// `strict_mode`'s call, and the printing is `spec.skip_all_if`'s. Keeping
+// those apart is what lets the suite hand the reason straight to spec and
+// have skipped suites counted in the summary rather than announced with a
+// bare println.
 require_browser(d: ptr) -> string {
-    required = os.getenv("COMPONENT_TESTS_REQUIRED")
-    strict = 0
-    if required == "1" || required == "true" { strict = 1 }
-
-    if d == null {
-        if strict == 1 { return "FAILED: no browser session (COMPONENT_TESTS_REQUIRED=1)" }
-        return "SKIPPED: could not open a browser session"
-    }
-    if harness_up() == 0 {
-        if strict == 1 { return "FAILED: no harness on ${HARNESS} (COMPONENT_TESTS_REQUIRED=1)" }
-        return "SKIPPED: no harness on ${HARNESS} — run `task harness` first"
-    }
+    if d == null { return "could not open a browser session" }
+    if harness_up() == 0 { return "no harness on ${HARNESS} — run `task harness` first" }
     return ""
 }
 
