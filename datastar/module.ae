@@ -1,0 +1,1118 @@
+// datastar — Aether SDK for Datastar (https://data-star.dev)
+//
+// MIT License. Ported from the Datastar Go SDK
+// (github.com/starfederation/datastar-go).
+//
+// The SDK is two halves, deliberately separable:
+//
+//   1. A pure wire-format engine — `frame`, `patch_elements_frame`,
+//      `patch_signals_frame`, `execute_script_frame` build the exact
+//      `event:` / `id:` / `retry:` / `data:` byte block Datastar's client
+//      parses, with no socket in sight. The upstream SDK conformance
+//      cases are asserted directly against these strings.
+//
+//   2. A thin transport — `new_sse` upgrades a live HTTP response to an
+//      event stream and the `patch_*` / `execute_script` verbs push
+//      frames down it.
+//
+// Splitting them that way is what makes the SDK testable without a
+// server: the format is a string function, the transport is a `tcp.write`.
+//
+// Options ride in a heap-boxed struct filled by a trailing block, which
+// is Aether's answer to Go's variadic functional options:
+//
+//     err = ds.patch_elements(sse, "<div id=\"x\">hi</div>") {
+//         ds.with_selector("#target")
+//         ds.with_mode_append()
+//         ds.with_view_transitions()
+//     }
+//
+// The block runs first and fills the config; the function then runs with
+// it. Calling without a block means "all defaults" and allocates nothing.
+
+import std.string
+import std.list
+import std.json
+import std.http
+import std.tcp
+import std.strbuilder
+
+exports(
+    // --- protocol constants -------------------------------------------
+    DATASTAR_KEY,
+    DEFAULT_SSE_RETRY_DURATION,
+    SELECTOR_DATALINE_LITERAL, MODE_DATALINE_LITERAL,
+    NAMESPACE_DATALINE_LITERAL, USE_VIEW_TRANSITION_DATALINE_LITERAL,
+    VIEW_TRANSITION_SELECTOR_DATALINE_LITERAL,
+    ELEMENTS_DATALINE_LITERAL, SIGNALS_DATALINE_LITERAL,
+    ONLY_IF_MISSING_DATALINE_LITERAL,
+    DEFAULT_ELEMENTS_USE_VIEW_TRANSITIONS,
+    DEFAULT_PATCH_SIGNALS_ONLY_IF_MISSING,
+    MODE_OUTER, MODE_INNER, MODE_REMOVE, MODE_REPLACE,
+    MODE_PREPEND, MODE_APPEND, MODE_BEFORE, MODE_AFTER,
+    DEFAULT_ELEMENT_PATCH_MODE,
+    NAMESPACE_HTML, NAMESPACE_SVG, NAMESPACE_MATHML,
+    EVENT_TYPE_PATCH_ELEMENTS, EVENT_TYPE_PATCH_SIGNALS,
+    NEWLINE, DOUBLE_NEWLINE,
+    valid_element_patch_modes, valid_namespaces,
+    element_patch_mode_from_string, namespace_from_string,
+
+    // --- option bags ---------------------------------------------------
+    CommonOptions, ElementOptions, SignalOptions, ScriptOptions,
+    CustomEventOptions,
+    element_options_new, signal_options_new, script_options_new,
+    custom_event_options_new,
+    element_options, signal_options, script_options, custom_event_options,
+    element_options_free, signal_options_free, script_options_free,
+    custom_event_options_free,
+    with_event_id, with_retry_duration,
+    with_selector, with_selector_id, with_mode, with_namespace,
+    with_view_transitions, without_view_transitions,
+    with_use_view_transitions, with_view_transition_selector,
+    with_mode_outer, with_mode_inner, with_mode_remove, with_mode_replace,
+    with_mode_prepend, with_mode_append, with_mode_before, with_mode_after,
+    with_namespace_html, with_namespace_svg, with_namespace_mathml,
+    with_only_if_missing,
+    with_auto_remove, with_script_attribute, with_script_attribute_kv,
+    with_bubbles, with_cancelable, with_composed,
+
+    // --- pure wire-format engine --------------------------------------
+    frame, frame_lines,
+    patch_elements_frame, patch_signals_frame, execute_script_frame,
+
+    // --- attribute helpers ---------------------------------------------
+    get_sse, post_sse, put_sse, patch_sse, delete_sse,
+
+    // --- SSE transport --------------------------------------------------
+    Sse,
+    new_sse, sse_over_socket, sse_socket, sse_is_closed, sse_close,
+    sse_send_frame, sse_send,
+    patch_elements, patch_signals, patch_signals_if_missing,
+    patch_elements_with, patch_signals_with, execute_script_with,
+    remove_element, remove_element_by_id,
+    execute_script, console_log, console_error, redirect, replace_url,
+    dispatch_custom_event, custom_event_script, prefetch,
+
+    // --- request side -----------------------------------------------------
+    read_signals, read_signals_json,
+
+    // --- small utilities shared with consumers ---------------------------
+    json_quote, url_decode
+)
+
+// ---------------------------------------------------------------------------
+// Protocol constants
+//
+// Mirrors of upstream's `datastar-sdk-config-v1.json`, which the Go SDK
+// code-generates into consts.go from a network fetch at build time. Held
+// as plain consts here: three literals and eight enum members are not
+// worth a build step that needs the internet.
+// ---------------------------------------------------------------------------
+
+const DATASTAR_KEY = "datastar"
+
+// The default duration (ms) for retrying SSE on connection reset. Part of
+// SSE's own retry mechanism, not a Datastar invention — which is why a
+// frame only carries a `retry:` line when it differs from this.
+const DEFAULT_SSE_RETRY_DURATION = 1000
+
+const SELECTOR_DATALINE_LITERAL = "selector "
+const MODE_DATALINE_LITERAL = "mode "
+const NAMESPACE_DATALINE_LITERAL = "namespace "
+const USE_VIEW_TRANSITION_DATALINE_LITERAL = "useViewTransition "
+const VIEW_TRANSITION_SELECTOR_DATALINE_LITERAL = "viewTransitionSelector "
+const ELEMENTS_DATALINE_LITERAL = "elements "
+const SIGNALS_DATALINE_LITERAL = "signals "
+const ONLY_IF_MISSING_DATALINE_LITERAL = "onlyIfMissing "
+
+// Should elements be patched using the ViewTransition API?
+const DEFAULT_ELEMENTS_USE_VIEW_TRANSITIONS = 0
+// Should a given set of signals patch if they are missing?
+const DEFAULT_PATCH_SIGNALS_ONLY_IF_MISSING = 0
+
+// The mode in which an element is patched into the DOM.
+const MODE_OUTER = "outer" // morph the element into the existing element
+const MODE_INNER = "inner" // replace the inner HTML of the existing element
+const MODE_REMOVE = "remove" // remove the existing element
+const MODE_REPLACE = "replace" // replace outright, no morph (resets state)
+const MODE_PREPEND = "prepend" // prepend inside the existing element
+const MODE_APPEND = "append" // append inside the existing element
+const MODE_BEFORE = "before" // insert before the existing element
+const MODE_AFTER = "after" // insert after the existing element
+
+const DEFAULT_ELEMENT_PATCH_MODE = "outer"
+
+// The namespace to use when patching elements into the DOM.
+const NAMESPACE_HTML = "html"
+const NAMESPACE_SVG = "svg"
+const NAMESPACE_MATHML = "mathml"
+
+// The protocol on top of SSE carrying pushed server→client communication.
+const EVENT_TYPE_PATCH_ELEMENTS = "datastar-patch-elements"
+const EVENT_TYPE_PATCH_SIGNALS = "datastar-patch-signals"
+
+const NEWLINE = "\n"
+const DOUBLE_NEWLINE = "\n\n"
+
+// The eight patch modes, in upstream's declaration order. Caller frees
+// the list with list.free.
+valid_element_patch_modes() -> ptr {
+    l = list.new()
+    list.add(l, MODE_OUTER)
+    list.add(l, MODE_INNER)
+    list.add(l, MODE_REMOVE)
+    list.add(l, MODE_PREPEND)
+    list.add(l, MODE_APPEND)
+    list.add(l, MODE_BEFORE)
+    list.add(l, MODE_AFTER)
+    list.add(l, MODE_REPLACE)
+    return l
+}
+
+// The three DOM namespaces. Caller frees the list with list.free.
+valid_namespaces() -> ptr {
+    l = list.new()
+    list.add(l, NAMESPACE_HTML)
+    list.add(l, NAMESPACE_SVG)
+    list.add(l, NAMESPACE_MATHML)
+    return l
+}
+
+// Validate a patch-mode string. Go-style (value, err): a non-empty error
+// means `s` named no mode, and the value is "".
+element_patch_mode_from_string(s: string) -> (string, string) {
+    match (s) {
+        "outer" -> { return (MODE_OUTER, "") }
+        "inner" -> { return (MODE_INNER, "") }
+        "remove" -> { return (MODE_REMOVE, "") }
+        "prepend" -> { return (MODE_PREPEND, "") }
+        "append" -> { return (MODE_APPEND, "") }
+        "before" -> { return (MODE_BEFORE, "") }
+        "after" -> { return (MODE_AFTER, "") }
+        "replace" -> { return (MODE_REPLACE, "") }
+        _ -> { return ("", "invalid element patch mode: ${s}") }
+    }
+}
+
+// Validate a namespace string. Same (value, err) shape.
+namespace_from_string(s: string) -> (string, string) {
+    match (s) {
+        "html" -> { return (NAMESPACE_HTML, "") }
+        "svg" -> { return (NAMESPACE_SVG, "") }
+        "mathml" -> { return (NAMESPACE_MATHML, "") }
+        _ -> { return ("", "invalid namespace: ${s}") }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Option bags
+//
+// One struct per event kind, heap-boxed so it can be pushed onto the
+// builder context stack and mutated by the setters a trailing block calls.
+// The setters take `_ctx: ptr` (Aether's invisible-context convention), so
+// inside a block they need no receiver, and outside one they can still be
+// called explicitly with a bag.
+//
+// Sentinels worth knowing: `auto_remove` starts at -1 ("caller never
+// said"), which the Go SDK spells as a nil *bool and which behaves as 1;
+// `use_view_transition` starts at 0.
+// ---------------------------------------------------------------------------
+
+// The prefix every options struct shares. `with_event_id` and
+// `with_retry_duration` apply to all four event kinds, and Aether has no
+// struct embedding, so they read through this view.
+//
+// That works only because `event_id` and `retry_ms` are the FIRST TWO
+// FIELDS, in this order, of ElementOptions, SignalOptions, ScriptOptions
+// and CustomEventOptions alike. Inserting a field ahead of them in any
+// of those — or reordering them — silently corrupts the others. Keep
+// the prefix intact, or give each struct its own setters.
+struct CommonOptions {
+    event_id: string,
+    retry_ms: int
+}
+
+struct ElementOptions {
+    event_id: string,
+    retry_ms: int,
+    selector: string,
+    mode: string,
+    namespace: string,
+    use_view_transition: int,
+    view_transition_selector: string
+}
+
+struct SignalOptions {
+    event_id: string,
+    retry_ms: int,
+    only_if_missing: int
+}
+
+struct ScriptOptions {
+    event_id: string,
+    retry_ms: int,
+    auto_remove: int,
+    attributes: ptr // std.list of complete `key="value"` strings
+}
+
+// Fresh, all-defaults options for a patch-elements event.
+element_options_new() -> ptr {
+    o = heap.new(ElementOptions)
+    o.event_id = ""
+    o.retry_ms = DEFAULT_SSE_RETRY_DURATION
+    o.selector = ""
+    o.mode = DEFAULT_ELEMENT_PATCH_MODE
+    o.namespace = ""
+    o.use_view_transition = DEFAULT_ELEMENTS_USE_VIEW_TRANSITIONS
+    o.view_transition_selector = ""
+    return o as ptr
+}
+
+// Fresh, all-defaults options for a patch-signals event.
+signal_options_new() -> ptr {
+    o = heap.new(SignalOptions)
+    o.event_id = ""
+    o.retry_ms = DEFAULT_SSE_RETRY_DURATION
+    o.only_if_missing = DEFAULT_PATCH_SIGNALS_ONLY_IF_MISSING
+    return o as ptr
+}
+
+// Fresh, all-defaults options for an execute-script event.
+script_options_new() -> ptr {
+    o = heap.new(ScriptOptions)
+    o.event_id = ""
+    o.retry_ms = DEFAULT_SSE_RETRY_DURATION
+    o.auto_remove = -1
+    o.attributes = list.new()
+    return o as ptr
+}
+
+struct CustomEventOptions {
+    event_id: string,
+    retry_ms: int,
+    selector: string,
+    bubbles: int,
+    cancelable: int,
+    composed: int
+}
+
+// Fresh, all-defaults options for a dispatched CustomEvent. The three
+// DOM flags default to on, which is what `new CustomEvent` means by an
+// event that behaves like a native one.
+custom_event_options_new() -> ptr {
+    o = heap.new(CustomEventOptions)
+    o.event_id = ""
+    o.retry_ms = DEFAULT_SSE_RETRY_DURATION
+    o.selector = "document"
+    o.bubbles = 1
+    o.cancelable = 1
+    o.composed = 1
+    return o as ptr
+}
+
+// The block form of the three constructors above. A zero-argument
+// `builder` whose trailing block fills the bag and hands it back, so an
+// option set reads as a description rather than a run of setter calls:
+//
+//     opts = ds.element_options() {
+//         ds.with_selector("#target")
+//         ds.with_mode_append()
+//         ds.with_view_transitions()
+//     }
+//     err = ds.patch_elements(sse, html, opts)
+//     ds.element_options_free(opts)
+//
+// Calling one with no block yields an all-defaults bag, the same as its
+// `*_options_new` counterpart — the explicit null check is load-bearing,
+// because a `builder` invoked without a trailing block receives a null
+// `_builder` and would otherwise hand back null. A null bag still
+// *renders* as all-defaults, so the mistake is invisible until someone
+// calls a setter on it and the setter silently does nothing.
+//
+// The caller owns the result either way and frees it with the matching
+// `*_options_free`.
+builder element_options(): ptr with element_options_new {
+    if _builder == null { return element_options_new() }
+    return _builder
+}
+
+builder signal_options(): ptr with signal_options_new {
+    if _builder == null { return signal_options_new() }
+    return _builder
+}
+
+builder script_options(): ptr with script_options_new {
+    if _builder == null { return script_options_new() }
+    return _builder
+}
+
+builder custom_event_options(): ptr with custom_event_options_new {
+    if _builder == null { return custom_event_options_new() }
+    return _builder
+}
+
+custom_event_options_free(p: ptr) {
+    if p == null { return }
+    o = p as *CustomEventOptions
+    heap.free(o)
+}
+
+element_options_free(p: ptr) {
+    if p == null { return }
+    o = p as *ElementOptions
+    heap.free(o)
+}
+
+signal_options_free(p: ptr) {
+    if p == null { return }
+    o = p as *SignalOptions
+    heap.free(o)
+}
+
+script_options_free(p: ptr) {
+    if p == null { return }
+    o = p as *ScriptOptions
+    if o.attributes != null { list.free(o.attributes) }
+    heap.free(o)
+}
+
+// Configure an optional event ID. The client's `lastEventId` message
+// field is set to it; if the next event carries no ID, the last one
+// stays in force.
+//
+// Shared by every event kind via CommonOptions — see the struct's note
+// on why the two fields lead each options struct.
+with_event_id(_ctx: ptr, id: string) {
+    if _ctx == null { return }
+    o = _ctx as *CommonOptions
+    o.event_id = id
+}
+
+// Override DEFAULT_SSE_RETRY_DURATION (ms) for this event.
+with_retry_duration(_ctx: ptr, ms: int) {
+    if _ctx == null { return }
+    o = _ctx as *CommonOptions
+    o.retry_ms = ms
+}
+
+// The CSS selector naming the elements this patch merges over or beside,
+// depending on the mode.
+with_selector(_ctx: ptr, selector: string) {
+    if _ctx == null { return }
+    o = _ctx as *ElementOptions
+    o.selector = selector
+}
+
+// Sugar for `with_selector("#" + id)`.
+with_selector_id(_ctx: ptr, id: string) {
+    with_selector(_ctx, "#${id}")
+}
+
+// Override DEFAULT_ELEMENT_PATCH_MODE. Takes a MODE_* constant.
+with_mode(_ctx: ptr, mode: string) {
+    if _ctx == null { return }
+    o = _ctx as *ElementOptions
+    o.mode = mode
+}
+
+// Set the DOM namespace. Takes a NAMESPACE_* constant.
+with_namespace(_ctx: ptr, ns: string) {
+    if _ctx == null { return }
+    o = _ctx as *ElementOptions
+    o.namespace = ns
+}
+
+// Patch through the View Transition API (or not).
+with_use_view_transitions(_ctx: ptr, enabled: int) {
+    if _ctx == null { return }
+    o = _ctx as *ElementOptions
+    o.use_view_transition = enabled
+}
+
+with_view_transitions(_ctx: ptr) { with_use_view_transitions(_ctx, 1) }
+without_view_transitions(_ctx: ptr) { with_use_view_transitions(_ctx, 0) }
+
+// Scope the view transition to a selector (element-scoped view
+// transitions). Only reaches the wire when view transitions are on.
+with_view_transition_selector(_ctx: ptr, selector: string) {
+    if _ctx == null { return }
+    o = _ctx as *ElementOptions
+    o.view_transition_selector = selector
+}
+
+with_mode_outer(_ctx: ptr) { with_mode(_ctx, MODE_OUTER) }
+with_mode_inner(_ctx: ptr) { with_mode(_ctx, MODE_INNER) }
+with_mode_remove(_ctx: ptr) { with_mode(_ctx, MODE_REMOVE) }
+with_mode_replace(_ctx: ptr) { with_mode(_ctx, MODE_REPLACE) }
+with_mode_prepend(_ctx: ptr) { with_mode(_ctx, MODE_PREPEND) }
+with_mode_append(_ctx: ptr) { with_mode(_ctx, MODE_APPEND) }
+with_mode_before(_ctx: ptr) { with_mode(_ctx, MODE_BEFORE) }
+with_mode_after(_ctx: ptr) { with_mode(_ctx, MODE_AFTER) }
+
+with_namespace_html(_ctx: ptr) { with_namespace(_ctx, NAMESPACE_HTML) }
+with_namespace_svg(_ctx: ptr) { with_namespace(_ctx, NAMESPACE_SVG) }
+with_namespace_mathml(_ctx: ptr) { with_namespace(_ctx, NAMESPACE_MATHML) }
+
+// Instruct the client to patch these signals only where they are absent.
+with_only_if_missing(_ctx: ptr, enabled: int) {
+    if _ctx == null { return }
+    o = _ctx as *SignalOptions
+    o.only_if_missing = enabled
+}
+
+// Require (or forbid) the client removing the <script> element after it
+// runs. Unset behaves as enabled.
+with_auto_remove(_ctx: ptr, enabled: int) {
+    if _ctx == null { return }
+    o = _ctx as *ScriptOptions
+    o.auto_remove = enabled
+}
+
+// Append one complete `key="value"` attribute to the <script> element.
+with_script_attribute(_ctx: ptr, attribute: string) {
+    if _ctx == null { return }
+    o = _ctx as *ScriptOptions
+    if o.attributes == null { o.attributes = list.new() }
+    list.add(o.attributes, attribute)
+}
+
+// Append a `key="value"` attribute built from its two halves.
+with_script_attribute_kv(_ctx: ptr, key: string, value: string) {
+    with_script_attribute(_ctx, "${key}=\"${value}\"")
+}
+
+// Whether the dispatched event bubbles up through its ancestors.
+// Setting it off is the server-side equivalent of the client calling
+// `event.stopPropagation()`.
+with_bubbles(_ctx: ptr, enabled: int) {
+    if _ctx == null { return }
+    o = _ctx as *CustomEventOptions
+    o.bubbles = enabled
+}
+
+// Whether the dispatched event can be cancelled. Setting it off blocks
+// `event.preventDefault()` on the client.
+with_cancelable(_ctx: ptr, enabled: int) {
+    if _ctx == null { return }
+    o = _ctx as *CustomEventOptions
+    o.cancelable = enabled
+}
+
+// Whether the dispatched event crosses the shadow-DOM boundary into the
+// document tree. With it off, the shadow root is the last node offered
+// the event.
+with_composed(_ctx: ptr, enabled: int) {
+    if _ctx == null { return }
+    o = _ctx as *CustomEventOptions
+    o.composed = enabled
+}
+
+// ---------------------------------------------------------------------------
+// The pure wire-format engine
+//
+// One SSE event, serialized exactly as Datastar's client parses it:
+//
+//     event: <type>\n
+//     id: <id>\n              (only when set)
+//     retry: <ms>\n           (only when != the 1000ms default)
+//     data: <line>\n          (once per data line)
+//     \n                      (blank line terminates the event)
+//
+// `data_lines` is a std.list of strings, each already carrying its
+// dataline literal ("elements ", "signals ", …). Nothing here touches a
+// socket, which is the point.
+// ---------------------------------------------------------------------------
+
+// Serialize one SSE event, terminating blank line included.
+frame(event_type: string, data_lines: ptr, event_id: string, retry_ms: int) -> string {
+    sb = strbuilder.new(256)
+    strbuilder.append(sb, "event: ")
+    strbuilder.append(sb, event_type)
+    strbuilder.append(sb, NEWLINE)
+
+    if event_id != "" {
+        strbuilder.append(sb, "id: ")
+        strbuilder.append(sb, event_id)
+        strbuilder.append(sb, NEWLINE)
+    }
+
+    // A retry line is only worth its bytes when it differs from the
+    // default the client already assumes.
+    if retry_ms > 0 && retry_ms != DEFAULT_SSE_RETRY_DURATION {
+        strbuilder.append(sb, "retry: ")
+        strbuilder.append_int(sb, retry_ms)
+        strbuilder.append(sb, NEWLINE)
+    }
+
+    if data_lines != null {
+        n = list.size(data_lines)
+        for (i = 0; i < n; i++) {
+            line, _ = list.get(data_lines, i)
+            strbuilder.append(sb, "data: ")
+            strbuilder.append(sb, line)
+            strbuilder.append(sb, NEWLINE)
+        }
+    }
+
+    strbuilder.append(sb, NEWLINE)
+    return strbuilder.finish(sb)
+}
+
+// Split `text` on newlines and append one `<literal><line>` dataline per
+// piece to `out`. Empty text contributes nothing — which is how
+// `patch_elements(sse, "")` (the remove case) emits no `elements` lines.
+frame_lines(out: ptr, literal: string, text: string) {
+    if text == "" { return }
+    parts = string.split(text, NEWLINE)
+    n = string.array_size(parts)
+    for (i = 0; i < n; i++) {
+        // array_get borrows into `parts`' storage; concat mints an owned
+        // copy that outlives the array_free below.
+        piece = string.concat(string.array_get(parts, i), "")
+        list.add(out, "${literal}${piece}")
+    }
+    string.array_free(parts)
+}
+
+// Build the datastar-patch-elements frame. `opts` may be null for
+// all-defaults.
+patch_elements_frame(elements: string, opts: ptr) -> string {
+    event_id = ""
+    retry_ms = DEFAULT_SSE_RETRY_DURATION
+    selector = ""
+    mode = DEFAULT_ELEMENT_PATCH_MODE
+    ns = ""
+    use_vt = DEFAULT_ELEMENTS_USE_VIEW_TRANSITIONS
+    vt_selector = ""
+
+    if opts != null {
+        o = opts as *ElementOptions
+        event_id = o.event_id
+        retry_ms = o.retry_ms
+        selector = o.selector
+        mode = o.mode
+        ns = o.namespace
+        use_vt = o.use_view_transition
+        vt_selector = o.view_transition_selector
+    }
+
+    rows = list.new()
+    defer list.free(rows)
+
+    if selector != "" {
+        list.add(rows, "${SELECTOR_DATALINE_LITERAL}${selector}")
+    }
+    // Only a non-default mode travels; the client assumes "outer".
+    if mode != DEFAULT_ELEMENT_PATCH_MODE {
+        list.add(rows, "${MODE_DATALINE_LITERAL}${mode}")
+    }
+    // Likewise "html" is the client's assumption.
+    if ns != "" && ns != NAMESPACE_HTML {
+        list.add(rows, "${NAMESPACE_DATALINE_LITERAL}${ns}")
+    }
+    if use_vt == 1 {
+        list.add(rows, "${USE_VIEW_TRANSITION_DATALINE_LITERAL}true")
+        // An element-scoped transition only means something with
+        // transitions on, so it rides inside this branch.
+        if vt_selector != "" {
+            list.add(rows, "${VIEW_TRANSITION_SELECTOR_DATALINE_LITERAL}${vt_selector}")
+        }
+    }
+
+    frame_lines(rows, ELEMENTS_DATALINE_LITERAL, elements)
+
+    return frame(EVENT_TYPE_PATCH_ELEMENTS, rows, event_id, retry_ms)
+}
+
+// Build the datastar-patch-signals frame. `signals_json` is a JSON
+// document; a multi-line one is split across `data: signals` lines, which
+// is what makes a pretty-printed payload legal on the wire.
+patch_signals_frame(signals_json: string, opts: ptr) -> string {
+    event_id = ""
+    retry_ms = DEFAULT_SSE_RETRY_DURATION
+    only_if_missing = DEFAULT_PATCH_SIGNALS_ONLY_IF_MISSING
+
+    if opts != null {
+        o = opts as *SignalOptions
+        event_id = o.event_id
+        retry_ms = o.retry_ms
+        only_if_missing = o.only_if_missing
+    }
+
+    rows = list.new()
+    defer list.free(rows)
+
+    if only_if_missing == 1 {
+        list.add(rows, "${ONLY_IF_MISSING_DATALINE_LITERAL}true")
+    }
+    frame_lines(rows, SIGNALS_DATALINE_LITERAL, signals_json)
+
+    return frame(EVENT_TYPE_PATCH_SIGNALS, rows, event_id, retry_ms)
+}
+
+// Build the frame that runs `script` in the browser. Datastar has no
+// dedicated script event — a script is a <script> element appended to
+// <body>, so this is a patch-elements frame with a fixed selector/mode.
+execute_script_frame(script: string, opts: ptr) -> string {
+    event_id = ""
+    retry_ms = DEFAULT_SSE_RETRY_DURATION
+    auto_remove = -1
+    attrs = null
+
+    if opts != null {
+        o = opts as *ScriptOptions
+        event_id = o.event_id
+        retry_ms = o.retry_ms
+        auto_remove = o.auto_remove
+        attrs = o.attributes
+    }
+
+    sb = strbuilder.new(256)
+    strbuilder.append(sb, "<script")
+    if attrs != null {
+        n = list.size(attrs)
+        for (i = 0; i < n; i++) {
+            a, _ = list.get(attrs, i)
+            strbuilder.append(sb, " ")
+            strbuilder.append(sb, a)
+        }
+    }
+    // Unset (-1) means "yes, self-remove" — the default the Go SDK
+    // spells as a nil *bool.
+    if auto_remove != 0 {
+        strbuilder.append(sb, " data-effect=\"el.remove()\"")
+    }
+    strbuilder.append(sb, ">")
+    strbuilder.append(sb, script)
+    strbuilder.append(sb, "</script>")
+    element = strbuilder.finish(sb)
+
+    eo = element_options_new()
+    defer element_options_free(eo)
+    with_selector(eo, "body")
+    with_mode_append(eo)
+    with_event_id(eo, event_id)
+    with_retry_duration(eo, retry_ms)
+
+    return patch_elements_frame(element, eo)
+}
+
+// ---------------------------------------------------------------------------
+// Datastar backend action attributes
+//
+// Sugar for the attribute *value* in `data-on-click="@get('/endpoint')"`.
+// ---------------------------------------------------------------------------
+
+get_sse(url: string) -> string { return "@get('${url}')" }
+post_sse(url: string) -> string { return "@post('${url}')" }
+put_sse(url: string) -> string { return "@put('${url}')" }
+patch_sse(url: string) -> string { return "@patch('${url}')" }
+delete_sse(url: string) -> string { return "@delete('${url}')" }
+
+// ---------------------------------------------------------------------------
+// SSE transport
+//
+// `new_sse(res)` writes the event-stream response head and then takes
+// ownership of the socket through `http.response_accept_tunnel`, so the
+// SDK owns every byte after the headers. That is what lets `frame()` put
+// `event:` / `id:` / `retry:` in the order Datastar's client wants: the
+// stdlib's own `http.server_sse` emits `id:` before `event:` and has no
+// retry line at all, so it cannot carry this protocol.
+// ---------------------------------------------------------------------------
+
+struct Sse {
+    socket: ptr,
+    closed: int
+}
+
+// Upgrade a live HTTP response to a Datastar SSE stream. Returns
+// (handle, err): a non-empty error means the connection could not be
+// tunnelled (TLS-wrapped, already consumed, or not live) and the handle
+// is null. Close the returned handle with `sse_close`.
+new_sse(res: ptr) -> (ptr, string) {
+    if res == null { return (null, "no response") }
+
+    http.http_response_set_status(res, 200)
+    http.http_response_set_header(res, "Content-Type", "text/event-stream")
+    http.http_response_set_header(res, "Cache-Control", "no-cache")
+    // `close`, not `keep-alive`. Go's SDK can promise keep-alive because
+    // its server still owns the connection after the handler returns;
+    // here the tunnel hands us the socket and we close it when the
+    // stream ends, so promising reuse would strand the next request on a
+    // dead connection. The stdlib's own SSE route sends `close` for the
+    // same reason. Reconnection is the client's job anyway — that is
+    // what the `retry:` line is for.
+    http.http_response_set_header(res, "Connection", "close")
+
+    sock = http.response_accept_tunnel(res)
+    if sock == null {
+        return (null, "failed to take over connection for SSE")
+    }
+
+    sse = heap.new(Sse)
+    sse.socket = sock
+    sse.closed = 0
+    return (sse as ptr, "")
+}
+
+// Wrap an already-connected socket as an SSE handle.
+//
+// `new_sse` is the normal entry point: it writes the response head and
+// tunnels a live HTTP response. This one skips all that and takes the
+// socket directly, for callers that already have one — a test driving
+// the wire format over a loopback pair, or a transport this SDK does not
+// model. The handle owns the socket from here: `sse_close` closes it.
+sse_over_socket(sock: ptr) -> ptr {
+    if sock == null { return null }
+    sse = heap.new(Sse)
+    sse.socket = sock
+    sse.closed = 0
+    return sse as ptr
+}
+
+// The raw socket behind an SSE handle, for callers that need to write
+// something this SDK does not model.
+sse_socket(p: ptr) -> ptr {
+    if p == null { return null }
+    sse = p as *Sse
+    return sse.socket
+}
+
+// 1 once the stream has been closed, by `sse_close` or by a failed write.
+sse_is_closed(p: ptr) -> int {
+    if p == null { return 1 }
+    sse = p as *Sse
+    return sse.closed
+}
+
+// Close the stream and release the handle. Safe on null.
+sse_close(p: ptr) {
+    if p == null { return }
+    sse = p as *Sse
+    if sse.closed == 0 {
+        if sse.socket != null { tcp.close(sse.socket) }
+        sse.closed = 1
+    }
+    heap.free(sse)
+}
+
+// Push a pre-built frame. Returns "" on success; a non-empty error marks
+// the stream closed, so a caller looping over events stops on the first
+// failure instead of writing into a dead socket.
+sse_send_frame(p: ptr, data: string) -> string {
+    if p == null { return "no sse handle" }
+    sse = p as *Sse
+    if sse.closed == 1 { return "sse stream closed" }
+    if sse.socket == null { return "sse stream has no socket" }
+
+    // write_n, not write: a frame carries whatever HTML the caller passed,
+    // and the strlen-based write would truncate it at an embedded NUL.
+    _n, werr = tcp.write_n(sse.socket, data, string.length(data))
+    if werr != "" {
+        sse.closed = 1
+        return "failed to write to sse stream: ${werr}"
+    }
+    return ""
+}
+
+// Build and push one event from its parts. The escape hatch for event
+// types this SDK does not wrap.
+sse_send(p: ptr, event_type: string, data_lines: ptr, event_id: string, retry_ms: int) -> string {
+    return sse_send_frame(p, frame(event_type, data_lines, event_id, retry_ms))
+}
+
+// Send HTML elements for the client to patch into the DOM. `opts` may
+// be null for all-defaults, or a bag from `element_options`:
+//
+//     opts = ds.element_options() {
+//         ds.with_selector("#target")
+//         ds.with_mode_append()
+//     }
+//     err = ds.patch_elements(sse, "<div>hi</div>", opts)
+//     ds.element_options_free(opts)
+patch_elements(p: ptr, elements: string, opts: ptr) -> string {
+    return sse_send_frame(p, patch_elements_frame(elements, opts))
+}
+
+// The trailing-block form, for when the options are only used once:
+//
+//     err = ds.patch_elements_with(sse, "<div/>") {
+//         ds.with_selector("#target")
+//         ds.with_mode_append()
+//     }
+//
+// Equivalent to building a bag, passing it, and freeing it — the bag is
+// created, filled by the block, used, and released here.
+//
+// Needs Aether 0.631.0 or later. Before that, a value-returning builder
+// in assignment position ran its body TWICE (aether#1888), which for a
+// send verb meant every event went out twice; the options-bag form above
+// was the only safe shape.
+builder patch_elements_with(p: ptr, elements: string): string with element_options_new {
+    defer element_options_free(_builder)
+    return sse_send_frame(p, patch_elements_frame(elements, _builder))
+}
+
+// Send a JSON signals payload for the client to merge into its store.
+patch_signals(p: ptr, signals_json: string, opts: ptr) -> string {
+    return sse_send_frame(p, patch_signals_frame(signals_json, opts))
+}
+
+// Trailing-block form. See `patch_elements_with`.
+builder patch_signals_with(p: ptr, signals_json: string): string with signal_options_new {
+    defer signal_options_free(_builder)
+    return sse_send_frame(p, patch_signals_frame(signals_json, _builder))
+}
+
+// `patch_signals` with onlyIfMissing forced on.
+patch_signals_if_missing(p: ptr, signals_json: string) -> string {
+    o = signal_options_new()
+    defer signal_options_free(o)
+    with_only_if_missing(o, 1)
+    return sse_send_frame(p, patch_signals_frame(signals_json, o))
+}
+
+// Remove the elements matching `selector` from the DOM.
+remove_element(p: ptr, selector: string) -> string {
+    o = element_options_new()
+    defer element_options_free(o)
+    with_mode_remove(o)
+    with_selector(o, selector)
+    return sse_send_frame(p, patch_elements_frame("", o))
+}
+
+// Sugar for `remove_element("#" + id)`.
+remove_element_by_id(p: ptr, id: string) -> string {
+    return remove_element(p, "#${id}")
+}
+
+// Run a script in the client browser. `opts` may be null, or a bag from
+// `script_options`.
+execute_script(p: ptr, script: string, opts: ptr) -> string {
+    return sse_send_frame(p, execute_script_frame(script, opts))
+}
+
+// Trailing-block form. See `patch_elements_with`.
+builder execute_script_with(p: ptr, script: string): string with script_options_new {
+    defer script_options_free(_builder)
+    return sse_send_frame(p, execute_script_frame(script, _builder))
+}
+
+// `console.log(msg)` in the browser.
+console_log(p: ptr, msg: string) -> string {
+    return sse_send_frame(p, execute_script_frame("console.log(${json_quote(msg)})", null))
+}
+
+// `console.error(msg)` in the browser.
+console_error(p: ptr, msg: string) -> string {
+    return sse_send_frame(p, execute_script_frame("console.error(${json_quote(msg)})", null))
+}
+
+// Navigate the browser to `url`.
+redirect(p: ptr, url: string) -> string {
+    js = "setTimeout(() => window.location.href = ${json_quote(url)})"
+    return sse_send_frame(p, execute_script_frame(js, null))
+}
+
+// Replace the current URL in the browser's history without navigating.
+replace_url(p: ptr, url: string) -> string {
+    js = "window.history.replaceState({}, \"\", ${json_quote(url)})"
+    return sse_send_frame(p, execute_script_frame(js, null))
+}
+
+// Dispatch a CustomEvent on the client. `detail_json` is the event's
+// `detail` payload ("" for `{}`); `opts` may be null, or a bag from
+// `custom_event_options` naming the target selector and the three DOM
+// flags:
+//
+//     opts = ds.custom_event_options() {
+//         ds.with_selector("#panel")
+//         ds.with_bubbles(0)
+//     }
+//     err = ds.dispatch_custom_event(sse, "refresh", "{\"n\":1}", opts)
+//     ds.custom_event_options_free(opts)
+dispatch_custom_event(p: ptr, event_name: string, detail_json: string, opts: ptr) -> string {
+    if event_name == "" { return "eventName is required" }
+
+    event_id = ""
+    retry_ms = DEFAULT_SSE_RETRY_DURATION
+    if opts != null {
+        o = opts as *CustomEventOptions
+        event_id = o.event_id
+        retry_ms = o.retry_ms
+    }
+
+    so = script_options_new()
+    defer script_options_free(so)
+    with_event_id(so, event_id)
+    with_retry_duration(so, retry_ms)
+
+    js = custom_event_script(event_name, detail_json, opts)
+    return sse_send_frame(p, execute_script_frame(js, so))
+}
+
+// The JavaScript a `dispatch_custom_event` sends. Split out for the same
+// reason the `*_frame` builders are: it is the part worth asserting on,
+// and it needs no socket to produce.
+custom_event_script(event_name: string, detail_json: string, opts: ptr) -> string {
+    selector = "document"
+    bubbles = 1
+    cancelable = 1
+    composed = 1
+
+    if opts != null {
+        o = opts as *CustomEventOptions
+        selector = o.selector
+        bubbles = o.bubbles
+        cancelable = o.cancelable
+        composed = o.composed
+    }
+
+    detail = detail_json
+    if detail == "" { detail = "{}" }
+
+    // "document" (and "") means the document itself, which is already an
+    // event target — no querySelectorAll needed, and none would match.
+    elements_js = "[document]"
+    if selector != "" && selector != "document" {
+        elements_js = "document.querySelectorAll(${json_quote(selector)})"
+    }
+
+    return "
+{
+	const elements = ${elements_js}
+
+	const event = new CustomEvent(${json_quote(event_name)}, {
+		bubbles: ${js_bool(bubbles)},
+		cancelable: ${js_bool(cancelable)},
+		composed: ${js_bool(composed)},
+		detail: ${detail},
+	});
+
+	elements.forEach((element) => {
+		element.dispatchEvent(event);
+	});
+}
+	"
+}
+
+// Render 0/1 as the JavaScript literal a CustomEvent init expects.
+fn js_bool(v: int) -> string {
+    if v == 0 { return "false" }
+    return "true"
+}
+
+// Ask the browser to prefetch `urls` (a std.list of strings) via the
+// Speculation Rules API. That block is a JSON <script>, so unlike every
+// other script this SDK sends it must NOT self-remove and must carry the
+// speculationrules type.
+prefetch(p: ptr, urls: ptr) -> string {
+    sb = strbuilder.new(256)
+    strbuilder.append(sb, "\n{\n\t\"prefetch\": [\n\t\t{\n\t\t\t\"source\": \"list\",\n\t\t\t\"urls\": [\n\t\t\t\t")
+    if urls != null {
+        n = list.size(urls)
+        for (i = 0; i < n; i++) {
+            u, _ = list.get(urls, i)
+            if i > 0 { strbuilder.append(sb, ",\n\t\t\t\t") }
+            strbuilder.append(sb, json_quote(u))
+        }
+    }
+    strbuilder.append(sb, "\n\t\t\t]\n\t\t}\n\t]\n}\n\t\t")
+    script = strbuilder.finish(sb)
+
+    o = script_options_new()
+    defer script_options_free(o)
+    with_auto_remove(o, 0)
+    with_script_attribute(o, "type=\"speculationrules\"")
+    return sse_send_frame(p, execute_script_frame(script, o))
+}
+
+// ---------------------------------------------------------------------------
+// Reading signals off a request
+//
+// Datastar puts the client's signal store in the `datastar` query
+// parameter for GET and DELETE, and in the request body for every other
+// method.
+// ---------------------------------------------------------------------------
+
+// The raw signals JSON for a request. Returns (json, err); a request that
+// simply carries no signals yields ("", "") — absence is not an error,
+// and the Go SDK returns nil for it too.
+read_signals_json(req: ptr) -> (string, string) {
+    if req == null { return ("", "no request") }
+
+    method = http.request_method(req)
+    if method == "GET" || method == "DELETE" {
+        raw = http.http_get_query_param(req, DATASTAR_KEY)
+        if raw == null { return ("", "") }
+        // Query values arrive percent-encoded — a JSON store always has
+        // braces and quotes in it, so this is never a no-op.
+        return (url_decode(string.concat(raw, "")), "")
+    }
+
+    body = http.request_body(req)
+    if body == null { return ("", "") }
+    return (string.concat(body, ""), "")
+}
+
+// Parse a request's signals into a std.json value. Returns (value, err);
+// the caller frees a non-null value with `json.json_free`. A request with
+// no signals yields (null, "").
+read_signals(req: ptr) -> (ptr, string) {
+    raw, err = read_signals_json(req)
+    if err != "" { return (null, err) }
+    if raw == "" { return (null, "") }
+
+    v, perr = json.parse(raw)
+    if perr != "" { return (null, "failed to unmarshal signals: ${perr}") }
+    return (v, "")
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+// JSON-quote a string so it can be dropped into generated JavaScript as
+// a literal. The equivalent of Go's `%q`, and the reason the generated
+// `console.log(...)` survives a message containing quotes or newlines.
+json_quote(s: string) -> string {
+    v = json.json_create_string(s)
+    out, err = json.stringify(v)
+    json.json_free(v)
+    if err != "" { return "\"\"" }
+    return out
+}
+
+// Percent-decode a query-parameter value: `+` is a space (as
+// application/x-www-form-urlencoded says), `%XX` is a byte.
+url_decode(s: string) -> string {
+    n = string.length(s)
+    sb = strbuilder.new(n + 16)
+    i = 0
+    for (i = 0; i < n; i = i + 1) {
+        c = string.char_at(s, i)
+        if c == 43 { // '+'
+            strbuilder.append(sb, " ")
+        } else if c == 37 && i + 2 < n { // '%'
+            hi = hex_value(string.char_at(s, i + 1))
+            lo = hex_value(string.char_at(s, i + 2))
+            if hi >= 0 && lo >= 0 {
+                strbuilder.append_byte(sb, hi * 16 + lo)
+                i = i + 2
+            } else {
+                strbuilder.append_byte(sb, c)
+            }
+        } else {
+            strbuilder.append_byte(sb, c)
+        }
+    }
+    return strbuilder.finish(sb)
+}
+
+// Value of one hex digit, or -1 if `c` is not one.
+fn hex_value(c: int) -> int {
+    if c >= 48 && c <= 57 { return c - 48 } // '0'-'9'
+    if c >= 97 && c <= 102 { return c - 87 } // 'a'-'f'
+    if c >= 65 && c <= 70 { return c - 55 } // 'A'-'F'
+    return -1
+}

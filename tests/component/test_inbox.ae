@@ -1,0 +1,222 @@
+// Component tests for the inbox rectangle.
+//
+// The card suite covers a form: type, submit, read a signal back. This
+// one covers a LIST, which fails in different ways — empty states,
+// filtering that must survive a re-query, and a backend error that must
+// not look like data loss.
+//
+// It is also the suite that exercises `patch_elements`. The card only
+// ever provokes `datastar-patch-signals`; the inbox rebuilds its <ul>
+// server-side and sends it as an inner-mode element patch, so the DOM
+// assertions here are on markup the SDK produced.
+
+import std.spec
+import std.string
+import std.os
+import webdriver
+import wd_extra
+import harness_fixture
+
+const INBOX_URL = "http://127.0.0.1:4321/c/inbox"
+
+const CORPUS = "{\"messages\":[
+  {\"sender\":\"Ana\",\"subject\":\"Lunch?\",\"unread\":true},
+  {\"sender\":\"Bob\",\"subject\":\"Invoice 42\",\"unread\":false},
+  {\"sender\":\"Cat\",\"subject\":\"Lunch tomorrow\",\"unread\":true}]}"
+
+main() {
+    d = harness_fixture.open_browser()
+    stop = harness_fixture.require_browser(d)
+    if stop != "" {
+        println(stop)
+        harness_fixture.close_browser(d)
+        if harness_fixture.strict_mode() == 1 { return 1 }
+        return 0
+    }
+    rc = run(d)
+    harness_fixture.close_browser(d)
+    return rc
+}
+
+fn run(d: ptr) -> int {
+    t0 = os.now_monotonic_ms()
+    fw = spec.init()
+
+    spec.describe(fw, "inbox — listing and filtering") {
+        spec.it("lists every seeded message") callback {
+            fresh(d)
+            search(d)
+            expect_status(d, "ok", "3 message(s)")
+            spec.assert_eq(item_count(d), 3, "three list items rendered")
+        }
+
+        spec.it("filters on sender and subject together") callback {
+            fresh(d)
+            set_filter(d, "lunch")
+            search(d)
+            expect_status(d, "ok", "2 message(s)")
+            spec.assert_eq(item_count(d), 2, "two items match 'lunch'")
+            spec.assert_true(list_text(d, "Ana") == 1, "Ana matched on subject")
+            spec.assert_true(list_text(d, "Cat") == 1, "Cat matched on subject")
+            spec.assert_true(list_text(d, "Bob") == 0, "Bob filtered out")
+        }
+
+        spec.it("filters case-insensitively") callback {
+            fresh(d)
+            set_filter(d, "LUNCH")
+            search(d)
+            spec.assert_eq(item_count(d), 2, "uppercase filter matches too")
+        }
+
+        spec.it("restricts to unread when asked") callback {
+            fresh(d)
+            check_unread(d)
+            search(d)
+            expect_status(d, "ok", "2 message(s)")
+            spec.assert_true(list_text(d, "Bob") == 0, "the read message is excluded")
+        }
+
+        spec.it("marks unread messages in the markup") callback {
+            fresh(d)
+            search(d)
+            // The class is on the <li> the SERVER rendered, so this is an
+            // assertion about SDK output that reached the DOM.
+            spec.assert_eq(unread_count(d), 2, "two items carry the unread class")
+        }
+    }
+
+    spec.describe(fw, "inbox — empty and error states") {
+        spec.it("says so when nothing matches") callback {
+            fresh(d)
+            set_filter(d, "nothing-matches-this")
+            search(d)
+            expect_status(d, "empty", "No messages match")
+            spec.assert_eq(item_count(d), 0, "the list is emptied")
+        }
+
+        spec.it("reports a store failure without clearing the list") callback {
+            fresh(d)
+            search(d)
+            spec.assert_eq(item_count(d), 3, "list populated first")
+
+            // Now make the next query fail. A transient backend fault
+            // should not look like data loss to the user.
+            seed("{\"failNext\":true}")
+            search(d)
+            expect_status(d, "error", "message store unavailable")
+            spec.assert_eq(item_count(d), 3, "the previous results are still on screen")
+        }
+
+        spec.it("recovers on the next search after a failure") callback {
+            fresh(d)
+            seed("{\"failNext\":true}")
+            search(d)
+            expect_status(d, "error", "message store unavailable")
+            search(d)
+            expect_status(d, "ok", "3 message(s)")
+        }
+    }
+
+    spec.describe(fw, "inbox — what it asked the store") {
+        spec.it("issues exactly one query per search") callback {
+            fresh(d)
+            search(d)
+            search(d)
+            spec.assert_eq(harness_fixture.backend_calls("/_harness/queries"), 2,
+                "two searches, two queries")
+        }
+
+        spec.it("passes the unread flag through to the store") callback {
+            fresh(d)
+            check_unread(d)
+            search(d)
+            // The DOM shows two items either way; only the query log
+            // proves the filtering happened server-side rather than by
+            // luck of the corpus.
+            spec.assert_true(queries_contain_unread() == 1,
+                "the store was asked for unread-only")
+        }
+    }
+
+    elapsed = os.now_monotonic_ms() - t0
+    count = 10
+    println("")
+    println("  ${count} inbox tests in ${elapsed}ms (~${elapsed / count}ms each)")
+
+    return spec.run_summary(fw)
+}
+
+// --- helpers ---------------------------------------------------------------
+
+fn fresh(d: ptr) {
+    harness_fixture.reset()
+    seed(CORPUS)
+    webdriver.get(d, INBOX_URL)
+}
+
+fn seed(json_body: string) {
+    _e = harness_fixture.post("/_harness/messages", json_body)
+}
+
+fn set_filter(d: ptr, text: string) {
+    _r = harness_fixture.fill_fast(d, "{\"inbox-filter\":\"${text}\"}")
+}
+
+// The checkbox binds on `input` like the text fields, but its value is
+// `checked` rather than `value`, so it needs its own nudge.
+fn check_unread(d: ptr) {
+    _r = harness_fixture.click_fast(d, "inbox-unread")
+}
+
+fn search(d: ptr) {
+    _r = harness_fixture.click_fast(d, "inbox-search")
+    // Give the patch a moment to land before the next assertion reads
+    // the DOM. wait_text on the status line does the real waiting.
+    sleep(60)
+}
+
+fn expect_status(d: ptr, status: string, msg: string) {
+    ok = harness_fixture.wait_text(d, "inbox-status", status, 3000)
+    spec.assert_eq(ok, 1, "status becomes '${status}'")
+    if ok == 1 {
+        got = webdriver.element_text(d, webdriver.find(d, webdriver.By_ID(), "inbox-message"))
+        spec.assert_str_eq(got, msg, "message text")
+    }
+}
+
+fn item_count(d: ptr) -> int {
+    return count_in_page(d, "document.querySelectorAll('#inbox-list li').length")
+}
+
+fn unread_count(d: ptr) -> int {
+    return count_in_page(d, "document.querySelectorAll('#inbox-list li.unread').length")
+}
+
+fn count_in_page(d: ptr, expr: string) -> int {
+    raw = webdriver.execute_script(d, "return String(${expr});", "[]")
+    // execute_script returns the JSON-encoded value, so a number comes
+    // back quoted: "3".
+    trimmed = string.replace_all(raw, "\"", "")
+    n, err = string.to_int(string.trim(trimmed))
+    if err != "" { return -1 }
+    return n
+}
+
+// 1 when the rendered list mentions `needle`.
+fn list_text(d: ptr, needle: string) -> int {
+    el = webdriver.find(d, webdriver.By_ID(), "inbox-list")
+    if string.length(el) == 0 { return 0 }
+    txt = webdriver.element_text(d, el)
+    return string.contains(txt, needle)
+}
+
+fn queries_contain_unread() -> int {
+    _c = harness_fixture.backend_calls("/_harness/queries")
+    body, err = http_get_queries()
+    if err != "" { return 0 }
+    return string.contains(body, "\"unreadOnly\":true")
+}
+
+fn http_get_queries() -> (string, string) {
+    return harness_fixture.get_raw("/_harness/queries")
+}

@@ -1,0 +1,516 @@
+// Unit tests for the parts of the SDK the conformance goldens do not
+// reach: the validators, the option sugar, the convenience verbs, and
+// the request-side signal decoding.
+//
+// The goldens (tests/test_conformance.ae) pin the wire format. These pin
+// the API around it.
+
+import std.spec
+import std.string
+import std.list
+import std.json
+import std.tcp
+import std.os
+import datastar
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "element patch mode validation") {
+        spec.it("accepts every mode it advertises") callback {
+            modes = datastar.valid_element_patch_modes()
+            n = list.size(modes)
+            spec.assert_eq(n, 8, "advertised mode count")
+            for (i = 0; i < n; i++) {
+                m, _ = list.get(modes, i)
+                got, err = datastar.element_patch_mode_from_string(m)
+                spec.assert_str_eq(err, "", "mode '${m}' is accepted")
+                spec.assert_str_eq(got, m, "mode '${m}' round-trips")
+            }
+            list.free(modes)
+        }
+
+        spec.it("rejects the empty string") callback {
+            _m, err = datastar.element_patch_mode_from_string("")
+            spec.assert_true(err != "", "empty string is rejected")
+        }
+
+        spec.it("rejects an unknown mode") callback {
+            _m, err = datastar.element_patch_mode_from_string("fakeType")
+            spec.assert_true(err != "", "'fakeType' is rejected")
+        }
+    }
+
+    spec.describe(fw, "namespace validation") {
+        spec.it("accepts every namespace it advertises") callback {
+            namespaces = datastar.valid_namespaces()
+            n = list.size(namespaces)
+            spec.assert_eq(n, 3, "advertised namespace count")
+            for (i = 0; i < n; i++) {
+                ns, _ = list.get(namespaces, i)
+                got, err = datastar.namespace_from_string(ns)
+                spec.assert_str_eq(err, "", "namespace '${ns}' is accepted")
+                spec.assert_str_eq(got, ns, "namespace '${ns}' round-trips")
+            }
+            list.free(namespaces)
+        }
+
+        spec.it("rejects an unknown namespace") callback {
+            _n, err = datastar.namespace_from_string("xhtml")
+            spec.assert_true(err != "", "'xhtml' is rejected")
+        }
+    }
+
+    spec.describe(fw, "patch-elements frames") {
+        spec.it("omits every default") callback {
+            f = datastar.patch_elements_frame("<div>x</div>", null)
+            spec.assert_str_eq(f,
+                "event: datastar-patch-elements\ndata: elements <div>x</div>\n\n",
+                "bare frame carries only what it must")
+        }
+
+        spec.it("splits a multi-line fragment across datalines") callback {
+            f = datastar.patch_elements_frame("<div>\n  <span>y</span>\n</div>", null)
+            spec.assert_str_eq(f,
+                "event: datastar-patch-elements\ndata: elements <div>\ndata: elements   <span>y</span>\ndata: elements </div>\n\n",
+                "one dataline per source line")
+        }
+
+        spec.it("omits the retry line at the default duration") callback {
+            o = datastar.element_options_new()
+            datastar.with_retry_duration(o, datastar.DEFAULT_SSE_RETRY_DURATION)
+            f = datastar.patch_elements_frame("<div/>", o)
+            datastar.element_options_free(o)
+            spec.assert_true(string.contains(f, "retry:") == 0,
+                "default retry stays off the wire")
+        }
+
+        spec.it("emits the retry line at any other duration") callback {
+            o = datastar.element_options_new()
+            datastar.with_retry_duration(o, 2000)
+            f = datastar.patch_elements_frame("<div/>", o)
+            datastar.element_options_free(o)
+            spec.assert_true(string.contains(f, "retry: 2000\n") == 1,
+                "non-default retry reaches the wire")
+        }
+
+        spec.it("omits the html namespace but sends the others") callback {
+            html_opts = datastar.element_options_new()
+            datastar.with_namespace_html(html_opts)
+            html_frame = datastar.patch_elements_frame("<div/>", html_opts)
+            datastar.element_options_free(html_opts)
+            spec.assert_true(string.contains(html_frame, "namespace") == 0,
+                "html is the client's assumption, so it is not sent")
+
+            svg_opts = datastar.element_options_new()
+            datastar.with_namespace_svg(svg_opts)
+            svg_frame = datastar.patch_elements_frame("<circle/>", svg_opts)
+            datastar.element_options_free(svg_opts)
+            spec.assert_true(string.contains(svg_frame, "data: namespace svg\n") == 1,
+                "svg is sent")
+        }
+
+        spec.it("sends a view-transition selector only with transitions on") callback {
+            off = datastar.element_options_new()
+            datastar.with_view_transition_selector(off, "#hero")
+            off_frame = datastar.patch_elements_frame("<div/>", off)
+            datastar.element_options_free(off)
+            spec.assert_true(string.contains(off_frame, "viewTransitionSelector") == 0,
+                "a scoped selector without transitions is meaningless, so it is dropped")
+
+            on = datastar.element_options_new()
+            datastar.with_view_transitions(on)
+            datastar.with_view_transition_selector(on, "#hero")
+            on_frame = datastar.patch_elements_frame("<div/>", on)
+            datastar.element_options_free(on)
+            spec.assert_true(string.contains(on_frame, "data: viewTransitionSelector #hero\n") == 1,
+                "with transitions on, the scoped selector is sent")
+        }
+
+        spec.it("uses the selector-id shorthand") callback {
+            o = datastar.element_options_new()
+            datastar.with_selector_id(o, "target")
+            f = datastar.patch_elements_frame("<div/>", o)
+            datastar.element_options_free(o)
+            spec.assert_true(string.contains(f, "data: selector #target\n") == 1,
+                "with_selector_id prefixes a '#'")
+        }
+    }
+
+    spec.describe(fw, "patch-signals frames") {
+        spec.it("omits onlyIfMissing when false") callback {
+            f = datastar.patch_signals_frame("{\"a\":1}", null)
+            spec.assert_str_eq(f,
+                "event: datastar-patch-signals\ndata: signals {\"a\":1}\n\n",
+                "the default needs no dataline")
+        }
+
+        spec.it("emits onlyIfMissing when true") callback {
+            o = datastar.signal_options_new()
+            datastar.with_only_if_missing(o, 1)
+            f = datastar.patch_signals_frame("{\"a\":1}", o)
+            datastar.signal_options_free(o)
+            spec.assert_true(string.contains(f, "data: onlyIfMissing true\n") == 1,
+                "onlyIfMissing reaches the wire")
+        }
+
+        spec.it("splits a pretty-printed document across datalines") callback {
+            f = datastar.patch_signals_frame("{\n\"a\": 1\n}", null)
+            spec.assert_str_eq(f,
+                "event: datastar-patch-signals\ndata: signals {\ndata: signals \"a\": 1\ndata: signals }\n\n",
+                "one dataline per source line")
+        }
+    }
+
+    spec.describe(fw, "execute-script frames") {
+        spec.it("self-removes by default") callback {
+            f = datastar.execute_script_frame("alert(1)", null)
+            spec.assert_str_eq(f,
+                "event: datastar-patch-elements\ndata: selector body\ndata: mode append\ndata: elements <script data-effect=\"el.remove()\">alert(1)</script>\n\n",
+                "an unconfigured script cleans itself up")
+        }
+
+        spec.it("keeps the element when auto-remove is off") callback {
+            o = datastar.script_options_new()
+            datastar.with_auto_remove(o, 0)
+            f = datastar.execute_script_frame("alert(1)", o)
+            datastar.script_options_free(o)
+            spec.assert_true(string.contains(f, "data-effect") == 0,
+                "auto_remove=0 drops the self-removal effect")
+        }
+
+        spec.it("emits attributes in the order they were added") callback {
+            o = datastar.script_options_new()
+            datastar.with_script_attribute_kv(o, "type", "module")
+            datastar.with_script_attribute_kv(o, "blocking", "render")
+            f = datastar.execute_script_frame("x()", o)
+            datastar.script_options_free(o)
+            spec.assert_true(
+                string.contains(f, "<script type=\"module\" blocking=\"render\" data-effect") == 1,
+                "attribute order is preserved")
+        }
+    }
+
+    spec.describe(fw, "block-form options") {
+        spec.it("fills a bag from a trailing block") callback {
+            opts = datastar.element_options() {
+                datastar.with_selector("#target")
+                datastar.with_mode_append()
+                datastar.with_view_transitions()
+            }
+            f = datastar.patch_elements_frame("<div/>", opts)
+            datastar.element_options_free(opts)
+
+            spec.assert_str_eq(f,
+                "event: datastar-patch-elements\ndata: selector #target\ndata: mode append\ndata: useViewTransition true\ndata: elements <div/>\n\n",
+                "every setter in the block reached the bag")
+        }
+
+        spec.it("yields a real, writable bag with no block") callback {
+            // A `builder` called without a trailing block gets a null
+            // `_builder`, so this used to hand back null — and a null bag
+            // still RENDERS as all-defaults, which hid the bug. The tell
+            // is that a setter on it silently did nothing, so assert on
+            // a bag that has been written to rather than on an empty one.
+            opts = datastar.element_options()
+            spec.assert_not_null(opts, "no block still yields a bag")
+
+            datastar.with_selector(opts, "#late")
+            f = datastar.patch_elements_frame("<div/>", opts)
+            datastar.element_options_free(opts)
+
+            spec.assert_true(string.contains(f, "data: selector #late\n") == 1,
+                "a setter called after the fact reaches the bag")
+        }
+
+        spec.it("agrees with no bag at all when nothing is set") callback {
+            opts = datastar.element_options()
+            with_bag = datastar.patch_elements_frame("<div/>", opts)
+            datastar.element_options_free(opts)
+
+            no_bag = datastar.patch_elements_frame("<div/>", null)
+            spec.assert_str_eq(with_bag, no_bag,
+                "an unfilled bag and no bag agree")
+        }
+
+        spec.it("yields writable bags for the other three kinds") callback {
+            so = datastar.signal_options()
+            spec.assert_not_null(so, "signal bag")
+            datastar.with_only_if_missing(so, 1)
+            sf = datastar.patch_signals_frame("{}", so)
+            datastar.signal_options_free(so)
+            spec.assert_true(string.contains(sf, "onlyIfMissing true") == 1,
+                "signal setter reaches the bag")
+
+            po = datastar.script_options()
+            spec.assert_not_null(po, "script bag")
+            datastar.with_script_attribute_kv(po, "type", "module")
+            pf = datastar.execute_script_frame("x()", po)
+            datastar.script_options_free(po)
+            spec.assert_true(string.contains(pf, "<script type=\"module\"") == 1,
+                "script setter reaches the bag")
+
+            co = datastar.custom_event_options()
+            spec.assert_not_null(co, "custom-event bag")
+            datastar.with_bubbles(co, 0)
+            cf = datastar.custom_event_script("e", "{}", co)
+            datastar.custom_event_options_free(co)
+            spec.assert_true(string.contains(cf, "bubbles: false") == 1,
+                "custom-event setter reaches the bag")
+        }
+
+        spec.it("fills a signals bag from a block") callback {
+            opts = datastar.signal_options() {
+                datastar.with_only_if_missing(1)
+                datastar.with_event_id("evt")
+            }
+            f = datastar.patch_signals_frame("{}", opts)
+            datastar.signal_options_free(opts)
+
+            spec.assert_true(string.contains(f, "id: evt\n") == 1, "event id set")
+            spec.assert_true(string.contains(f, "data: onlyIfMissing true\n") == 1,
+                "onlyIfMissing set")
+        }
+
+        spec.it("fills a script bag from a block") callback {
+            opts = datastar.script_options() {
+                datastar.with_auto_remove(0)
+                datastar.with_script_attribute_kv("type", "module")
+            }
+            f = datastar.execute_script_frame("x()", opts)
+            datastar.script_options_free(opts)
+
+            spec.assert_true(string.contains(f, "<script type=\"module\">") == 1,
+                "attribute set and auto-remove suppressed")
+        }
+    }
+
+    spec.describe(fw, "custom events") {
+        spec.it("rejects an empty event name") callback {
+            err = datastar.dispatch_custom_event(null, "", "{}", null)
+            spec.assert_str_eq(err, "eventName is required", "name is mandatory")
+        }
+
+        spec.it("targets the document by default") callback {
+            // Reach past the transport: build the same script the verb
+            // would send, so the assertion is on content not delivery.
+            opts = datastar.custom_event_options()
+            js = datastar.custom_event_script("refresh", "{}", opts)
+            datastar.custom_event_options_free(opts)
+
+            spec.assert_true(string.contains(js, "const elements = [document]") == 1,
+                "no selector means the document itself, not a query")
+            spec.assert_true(string.contains(js, "bubbles: true") == 1, "bubbles on")
+            spec.assert_true(string.contains(js, "cancelable: true") == 1, "cancelable on")
+            spec.assert_true(string.contains(js, "composed: true") == 1, "composed on")
+        }
+
+        spec.it("queries for any other selector") callback {
+            opts = datastar.custom_event_options() {
+                datastar.with_selector("#panel")
+            }
+            js = datastar.custom_event_script("refresh", "{}", opts)
+            datastar.custom_event_options_free(opts)
+
+            spec.assert_true(
+                string.contains(js, "document.querySelectorAll(\"#panel\")") == 1,
+                "a real selector becomes a query")
+        }
+
+        spec.it("carries the three DOM flags") callback {
+            opts = datastar.custom_event_options() {
+                datastar.with_bubbles(0)
+                datastar.with_cancelable(0)
+                datastar.with_composed(0)
+            }
+            js = datastar.custom_event_script("refresh", "{}", opts)
+            datastar.custom_event_options_free(opts)
+
+            spec.assert_true(string.contains(js, "bubbles: false") == 1, "bubbles off")
+            spec.assert_true(string.contains(js, "cancelable: false") == 1, "cancelable off")
+            spec.assert_true(string.contains(js, "composed: false") == 1, "composed off")
+        }
+
+        spec.it("defaults an empty detail to an empty object") callback {
+            js = datastar.custom_event_script("refresh", "", null)
+            spec.assert_true(string.contains(js, "detail: {},") == 1,
+                "no detail is an empty object, not a syntax error")
+        }
+    }
+
+    spec.describe(fw, "trailing-block send verbs") {
+        // These exist because Aether 0.631.0 (aether#1888) fixed a
+        // value-returning builder running its body twice in assignment
+        // position. For a SEND verb that meant every event went out
+        // twice, so the SDK previously offered only the options-bag form.
+        //
+        // The assertion that matters is the COUNT, not the content: the
+        // old bug produced a correct-looking result because the second
+        // call overwrote the first. Only counting catches a regression.
+        // Counting frames needs a real socket, so these run over a
+        // loopback pair rather than a mock: `sse_send_frame` writes with
+        // tcp.write_n, and faking that would test the fake.
+        spec.it("sends exactly one elements frame from a block") callback {
+            expect_one_frame("elements", "data: selector #target\n")
+        }
+
+        spec.it("sends exactly one signals frame from a block") callback {
+            expect_one_frame("signals", "onlyIfMissing true")
+        }
+
+        spec.it("sends exactly one script frame from a block") callback {
+            expect_one_frame("script", "type=\"module\"")
+        }
+    }
+
+    spec.describe(fw, "backend action attributes") {
+        spec.it("wraps a url in each verb") callback {
+            spec.assert_str_eq(datastar.get_sse("/a"), "@get('/a')", "get")
+            spec.assert_str_eq(datastar.post_sse("/a"), "@post('/a')", "post")
+            spec.assert_str_eq(datastar.put_sse("/a"), "@put('/a')", "put")
+            spec.assert_str_eq(datastar.patch_sse("/a"), "@patch('/a')", "patch")
+            spec.assert_str_eq(datastar.delete_sse("/a"), "@delete('/a')", "delete")
+        }
+    }
+
+    spec.describe(fw, "json_quote") {
+        spec.it("quotes a plain string") callback {
+            spec.assert_str_eq(datastar.json_quote("hi"), "\"hi\"", "plain")
+        }
+
+        spec.it("escapes what would otherwise break the generated JS") callback {
+            spec.assert_str_eq(datastar.json_quote("a\"b"), "\"a\\\"b\"", "embedded quote")
+            spec.assert_str_eq(datastar.json_quote("a\nb"), "\"a\\nb\"", "embedded newline")
+        }
+    }
+
+    spec.describe(fw, "url_decode") {
+        spec.it("passes an unencoded string through") callback {
+            spec.assert_str_eq(datastar.url_decode("abc"), "abc", "no escapes")
+        }
+
+        spec.it("decodes percent escapes") callback {
+            spec.assert_str_eq(datastar.url_decode("%7B%22a%22%3A1%7D"),
+                "{\"a\":1}", "a JSON store as it arrives in a query string")
+        }
+
+        spec.it("treats + as a space") callback {
+            spec.assert_str_eq(datastar.url_decode("a+b"), "a b", "form encoding")
+        }
+
+        spec.it("leaves a truncated escape alone") callback {
+            // A trailing '%' with nothing to decode must not read past
+            // the end of the string.
+            spec.assert_str_eq(datastar.url_decode("a%"), "a%", "trailing percent")
+            spec.assert_str_eq(datastar.url_decode("a%4"), "a%4", "one hex digit short of a full escape")
+            spec.assert_str_eq(datastar.url_decode("a%zz"), "a%zz", "non-hex digits")
+        }
+    }
+
+    spec.describe(fw, "sse handle") {
+        spec.it("reports a null handle as closed") callback {
+            spec.assert_eq(datastar.sse_is_closed(null), 1, "null is closed")
+            spec.assert_null(datastar.sse_socket(null), "null has no socket")
+        }
+
+        spec.it("refuses to write to a null handle") callback {
+            err = datastar.sse_send_frame(null, "event: x\n\n")
+            spec.assert_true(err != "", "writing to nothing is an error, not a crash")
+        }
+
+        spec.it("tolerates closing nothing") callback {
+            datastar.sse_close(null)
+            spec.assert_true(1 == 1, "sse_close(null) does not crash")
+        }
+    }
+
+    spec.describe(fw, "signal reading") {
+        spec.it("reports a null request") callback {
+            _v, err = datastar.read_signals(null)
+            spec.assert_true(err != "", "a null request is an error")
+        }
+    }
+
+    return spec.run_summary(fw)
+}
+
+// Drive one trailing-block send verb over a real loopback socket and
+// assert that EXACTLY ONE frame arrived carrying `needle`.
+//
+// The count is the point. Before aether#1888 a value-returning builder
+// in assignment position ran its body twice, and because the second call
+// overwrote the first the RESULT looked correct — only counting what
+// reached the wire catches it.
+fn expect_one_frame(kind: string, needle: string) {
+    port = 47311
+    if kind == "signals" { port = 47312 }
+    if kind == "script" { port = 47313 }
+
+    srv, lerr = tcp.listen(port)
+    if lerr != "" { spec.fail("cannot listen on ${port}: ${lerr}"); return }
+
+    client, cerr = tcp.connect("127.0.0.1", port)
+    if cerr != "" { spec.fail("cannot connect: ${cerr}"); tcp.server_close(srv); return }
+
+    peer, aerr = tcp.accept(srv)
+    if aerr != "" { spec.fail("cannot accept: ${aerr}"); tcp.close(client); tcp.server_close(srv); return }
+
+    sse = datastar.sse_over_socket(client)
+
+    err = ""
+    if kind == "elements" {
+        err = datastar.patch_elements_with(sse, "<div/>") {
+            datastar.with_selector("#target")
+            datastar.with_mode_append()
+        }
+    }
+    if kind == "signals" {
+        err = datastar.patch_signals_with(sse, "{\"a\":1}") {
+            datastar.with_only_if_missing(1)
+        }
+    }
+    if kind == "script" {
+        err = datastar.execute_script_with(sse, "x()") {
+            datastar.with_script_attribute_kv("type", "module")
+        }
+    }
+    spec.assert_str_eq(err, "", "${kind}: no send error")
+
+    // Close the writer so the reader sees EOF rather than blocking.
+    tcp.close(client)
+
+    got = drain(peer)
+    tcp.close(peer)
+    tcp.server_close(srv)
+
+    spec.assert_eq(count_events(got), 1, "${kind}: exactly one frame on the wire")
+    spec.assert_true(string.contains(got, needle) == 1,
+        "${kind}: the block's option reached the wire")
+}
+
+fn drain(sock: ptr) -> string {
+    out = ""
+    for (i = 0; i < 64; i++) {
+        chunk, rerr = tcp.read(sock, 4096)
+        if rerr != "" { break }
+        if string.length(chunk) == 0 { break }
+        out = "${out}${chunk}"
+    }
+    return out
+}
+
+// SSE events are terminated by a blank line, so counting "\n\n" counts
+// frames.
+fn count_events(stream: string) -> int {
+    n = 0
+    from = 0
+    total = string.length(stream)
+    for (i = 0; i < total; i++) {
+        at = string.index_of_from(stream, "\n\n", from)
+        if at < 0 { break }
+        n = n + 1
+        from = at + 2
+        if from >= total { break }
+    }
+    return n
+}

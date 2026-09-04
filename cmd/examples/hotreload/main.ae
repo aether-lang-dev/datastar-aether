@@ -1,0 +1,73 @@
+// Hot reload — the browser refreshes itself whenever the server restarts.
+//
+// The page mounts a Datastar handler that reconnects forever:
+//
+//     <body data-init="@get('/hotreload', {retryInterval: 100, retry: 'always'})">
+//
+// The server sends `window.location.reload()` down that stream exactly
+// once per process. So: edit a file, the watcher restarts the server,
+// the client's stream drops, it reconnects, and the fresh process sends
+// its one reload event. Every later reconnect within the same process
+// gets nothing, which is what stops a reload loop.
+//
+// Run:  task hotreload
+// Then: http://localhost:9001
+//
+// The file watching is somebody else's job — reflex, entr, watchexec.
+// The Taskfile wires one up.
+
+import contrib.tinyweb
+import std.file
+import datastar
+
+const PORT = 9001
+const HTML_PATH = "cmd/examples/hotreload/hotreload.html"
+
+// Whether this process has already told a client to reload. Module-level
+// state, so it survives across requests but not across a restart — which
+// is precisely the "once per server start" semantics the example wants
+// (Go spells it `sync.Once`).
+var reload_sent = 0
+
+main() {
+    page, err = file.read(HTML_PATH)
+    if err != "" {
+        println("cannot read ${HTML_PATH}: ${err}")
+        println("run `task hotreload-html` first to generate it")
+        return 1
+    }
+
+    server = tinyweb.web_server_host("localhost", PORT) {
+        tinyweb.end_point(tinyweb.GET, "/") | req: ptr, res: ptr, ctx: ptr | {
+            tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+            tinyweb.response_write(res, page)
+        }
+
+        tinyweb.end_point(tinyweb.GET, "/hotreload") | req: ptr, res: ptr, ctx: ptr | {
+            hot_reload(res)
+        }
+    }
+
+    println("Hot-reload demo on http://localhost:${PORT}")
+    start_err = tinyweb.tw_start(server)
+    if start_err != "" {
+        println("failed to start: ${start_err}")
+        return 1
+    }
+    tinyweb.tw_stop(server)
+    return 0
+}
+
+fn hot_reload(res: ptr) {
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+
+    // Only the first client to connect after this process started gets
+    // the reload. Later connections — and later reconnects by the same
+    // client — get an empty stream, or the page would reload forever.
+    if reload_sent == 1 { return }
+    reload_sent = 1
+
+    _e = datastar.execute_script(sse, "window.location.reload()", null)
+}

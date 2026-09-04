@@ -1,0 +1,251 @@
+Aether issues outstanding from the Datastar port
+================================================
+
+What is left. Everything fixed has been dropped from this file — the
+detail lives in the Aether repo's own history now, and the workarounds
+are gone from this tree.
+
+Fixed and adopted: the E0200 typecheck false positive (aether#1881,
+0.629.0), `ae run` cache staleness (aether#1886, 0.630.0), and four in
+aether#1888 / 0.631.0 — the value-returning builder running twice, the
+struct-literal `*T` field emitting `.` not `->`, `ae build -o` not
+creating its output directory, and `ae fmt` writing `i ++`. Closure
+shadowing was fixed on the 0.630.0 line.
+
+Item 4 (streaming compression) is being built upstream right now but is
+unreleased, so it stays here until it is adoptable.
+
+
+-----------------------------------------------------------------------
+1. A `builder` call used as a FUNCTION ARGUMENT silently drops its
+   trailing block
+-----------------------------------------------------------------------
+
+Status:   open — reproduced upstream and deliberately deferred
+Severity: medium — silent wrong behaviour, no diagnostic
+Found:    2026-09-03, aetherc 0.627.0
+
+A value-returning `builder` works in assignment and statement position,
+but as an argument to another call the trailing block never runs.
+`_builder` still arrives non-null, it is just never filled — so the
+builder runs with all defaults. No warning, no error.
+
+    struct Opts { selector: string }
+    opts_new() -> ptr { o = heap.new(Opts); o.selector = ""; return o as ptr }
+    with_selector(_ctx: ptr, s: string) {
+        if _ctx != null { o = _ctx as *Opts; o.selector = s }
+    }
+
+    builder patch(e: string): string with opts_new {
+        sel = ""
+        if _builder != null { o = _builder as *Opts; sel = o.selector }
+        return "[${sel}]"
+    }
+
+    wrap(s: string) -> string { return "wrap:${s}" }
+
+    main() {
+        a = patch("x") { with_selector("#t") }
+        println("assignment: ${a}")                          // [#t]      correct
+        println("nested arg: ${wrap(patch("x") { with_selector("#t") })}")
+                                                             // wrap:[]   WRONG
+    }
+
+The setter is not merely ignored — it is never called (a println in
+`with_selector` shows one invocation, not two).
+
+Why it is still open: builder lowering is statement-level, so in
+expression position the call unconditionally gets `(void*)0` as its
+config; there is no path that consults a trailing block there at all.
+Fixing it means emitting a statement-expression in one of the hottest
+paths in codegen. It wants its own PR rather than a batch.
+
+Containment here: every SDK verb returns a Go-style error string that
+callers assign, which is assignment position — so the supported path is
+the one the SDK's own surface uses. Worth knowing before someone writes
+`println(ds.patch_elements(...) {...})`.
+
+Related grammar note (not a bug, just undocumented): a `builder` with a
+return type must spell it with a colon *before* the `with` clause —
+
+    builder patch(e: string): string with opts_new { ... }   // parses
+    builder patch(e: string) -> string with opts_new { ... } // parse error
+
+docs/closures-and-builder-dsl.md shows the colon-form return and the
+`with` clause separately but never combined, so the ordering has to be
+discovered by experiment.
+
+
+-----------------------------------------------------------------------
+2. `std.spec`: sibling `describe` blocks indent cumulatively
+-----------------------------------------------------------------------
+
+Status:   open, cosmetic
+Severity: low — output readability only
+Found:    2026-09-03, aetherc 0.627.0
+
+Several `describe` blocks at the same level render as if each were
+nested inside the last, so a suite with ten top-level groups walks off
+the right-hand side of the terminal.
+
+    main() {
+        fw = spec.init()
+        spec.describe(fw, "first")  { spec.it("a") callback { } }
+        spec.describe(fw, "second") { spec.it("b") callback { } }
+        spec.describe(fw, "third")  { spec.it("c") callback { } }
+        return spec.run_summary(fw)
+    }
+
+Observed                    Expected
+
+    first                       first
+      ✓ a                         ✓ a
+      second                    second
+        ✓ b                       ✓ b
+        third                   third
+          ✓ c                     ✓ c
+
+Looks like the indent counter is incremented per `describe` and only
+decremented at the end of the run rather than at the end of each block.
+Results are correct; only the layout is wrong.
+
+
+-----------------------------------------------------------------------
+3. A `builder` called with NO trailing block receives a null `_builder`
+-----------------------------------------------------------------------
+
+Status:   documented behaviour — changing it is a design decision, not
+          a bug fix
+Severity: low as a language matter; it caused a real bug here
+Found:    2026-09-03, aetherc 0.627.0
+
+docs/closures-and-builder-dsl.md does say `_builder` "is null when
+called without a trailing block", so this is specified. Recorded anyway
+because it produced a live defect here and the failure mode is silent.
+
+The natural way to expose an options object is
+
+    builder element_options(): ptr with element_options_new {
+        return _builder
+    }
+
+which reads as "give me a bag, optionally pre-filled". With a block it
+is correct. Without one it returns NULL, because the `with` factory runs
+only on the trailing-block path — the zero-config call never constructs
+the config it names.
+
+That is quiet rather than loud in an API where null already means
+"defaults": `patch_elements_frame(html, null)` renders the same bytes as
+an empty bag. It surfaces one call later, when a setter writes into the
+null bag, does nothing, and the option vanishes:
+
+    o = script_options()                           // null!
+    with_script_attribute_kv(o, "type", "module")  // silent no-op
+    execute_script_frame("x()", o)                 // attribute is gone
+
+Our own unit test missed it for the same reason — it asserted that an
+unfilled bag matched no bag, which is true of null too. The test now
+asserts on a bag that has been written to.
+
+Fix on our side is a null check in each builder:
+
+    builder element_options(): ptr with element_options_new {
+        if _builder == null { return element_options_new() }
+        return _builder
+    }
+
+Language-side, invoking the `with` factory on the blockless path too
+would make `builder f() with g` mean "g always runs; a block may then
+customise it", which is what the shape reads like. If the current
+semantics are deliberate, the doc could say plainly that a `with`
+factory does NOT run without a block — the present wording leaves the
+reader to infer it.
+
+
+-----------------------------------------------------------------------
+4. FEATURE REQUEST: streaming (incremental) deflate in `std.zlib`
+-----------------------------------------------------------------------
+
+Status:   BEING BUILT upstream, unreleased — not yet adoptable here
+Severity: medium — feature parity, not correctness
+Found:    2026-09-03, aether 0.627.0
+
+UPDATE 2026-09-04. This is in progress on the Aether `feat/compression-
+codecs` branch and the shipped surface matches the proposal below almost
+exactly — stream_new / stream_write / stream_flush / stream_finish /
+stream_free, with Z_SYNC_FLUSH semantics and RAW/ZLIB/GZIP framing. The
+module's own doc comment cites the SSE case as the motivation. Brotli
+and zstd landed alongside it with the same streaming shape, which closes
+the "smaller gap" noted at the end of this entry too.
+
+Not adopted yet, and NOT verified here: the commits are on a feature
+branch with no tag, and the stdlib installed on this machine
+(/usr/local/share/aether, active version 0.629.0) predates them, so
+`zlib.stream_new` does not resolve. A round-trip check written against
+it fails at type-check with "Undefined function 'zlib.stream_finish'".
+Revisit when this reaches a release; the SDK work is then a compression
+negotiation layer over the verbs, not a redesign.
+
+The Datastar Go SDK offers optional SSE compression (`WithCompression`,
+gzip / deflate / brotli / zstd). This port cannot, and the blocker is
+not the missing codecs — it is that `std.zlib` is one-shot.
+
+An SSE stream is one long-lived response carrying many small events.
+Compressing it means holding ONE deflate stream open for the life of the
+connection and flushing at each event boundary (`Z_SYNC_FLUSH`), so the
+browser sees a single continuous stream. Compressing each event
+independently produces N complete streams concatenated, which no
+`Content-Encoding: gzip` client will decode.
+
+`std/zlib/aether_zlib.c` runs deflateInit2 -> deflate(Z_FINISH) ->
+deflateEnd inside every call, so each call is necessarily a complete
+stream. There is no handle to keep alive between them, and no way to say
+"flush what you have, keep the window".
+
+What would unblock it — a handle-based surface alongside the one-shot
+calls, the same shape `std.cryptography`'s streaming hashes already use:
+
+    zlib.stream_new(format, level) -> ptr      // raw / zlib / gzip
+    zlib.stream_write(s, data, len) -> string  // buffer input
+    zlib.stream_flush(s) -> (ptr, int, string) // Z_SYNC_FLUSH, emit ready bytes
+    zlib.stream_finish(s) -> (ptr, int, string)// Z_FINISH, emit the tail
+    zlib.stream_free(s)
+
+That maps directly onto zlib's own API (the one-shot calls are already
+deflateInit2/deflate/deflateEnd; this exposes the stream between them),
+and would serve any long-lived compressed stream — a chunked HTTP
+response, a log shipper, a backup pipe — not only this SDK.
+
+Brotli and zstd are absent from std and contrib entirely, so even with
+streaming deflate this SDK would offer gzip + deflate where Go offers
+four. That is a smaller gap and a separate one.
+
+Documented as a known limitation in README.md rather than shipped
+half-working: a compressed SSE stream a browser cannot decode is worse
+than no compression option at all.
+
+
+-----------------------------------------------------------------------
+Appendix: an UPSTREAM (Datastar, not Aether) bug found while testing
+-----------------------------------------------------------------------
+
+Not an Aether issue — noted so it is not rediscovered.
+
+`sdk/tests/cmd/datastar-sdk-tests`'s `-server` flag has no effect. The
+runner's `main()` does `os.Setenv("TEST_SERVER_URL", *serverURL)`, but
+`sdk/tests/testdata.go` reads it into a package-level variable:
+
+    var serverURL = os.Getenv("TEST_SERVER_URL")
+
+Package-level initialisers run before `main()`, so the Setenv always
+loses and every run targets the default `http://localhost:7331`.
+
+Symptom while porting: pointing the runner at a deliberately-wrong
+server on :7399 still printed PASS, because it was quietly testing the
+correct server still listening on :7331. It fails correctly (connection
+refused) once nothing is on 7331, so the suite is sound — only the flag
+is dead.
+
+Fix would be to read the env var inside the test functions, or have
+main() assign the package variable directly. Worth reporting upstream if
+this SDK is ever contributed back.

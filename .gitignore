@@ -1,0 +1,17 @@
+.task
+.claude
+
+# Aether build output
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Scratch
+*.tmp
+.upstream/
+target/

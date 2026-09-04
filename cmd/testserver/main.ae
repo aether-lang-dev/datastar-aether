@@ -1,0 +1,93 @@
+// The Datastar SDK conformance test server.
+//
+// The upstream test suite (github.com/starfederation/datastar,
+// `sdk/tests`) drives every SDK the same way: it sends a document
+//
+//     { "events": [ { "type": "patchElements", ... }, ... ] }
+//
+// to /test — in the `datastar` query parameter for GET, in the body for
+// POST — and diffs the SSE stream that comes back against a golden file.
+//
+// Run it, then point the runner at it:
+//
+//     task test-server                  # this server on :7331
+//     task test                         # the upstream runner against it
+//
+// The event decoding lives in `datastar.testevents`, shared with
+// tests/test_conformance.ae, so the offline suite and this server cannot
+// disagree about what an event means.
+
+import std.http
+import std.string
+import std.json
+import std.os
+import datastar
+import datastar.testevents
+
+const DEFAULT_PORT = 7331
+
+// Handle one /test request: read the events document off the request the
+// way Datastar reads signals, then stream a frame per event.
+@c_callback test_handler(req: ptr, res: ptr, ud: ptr) {
+    doc, rerr = datastar.read_signals(req)
+    if rerr != "" {
+        respond_error(res, 400, "failed to read signals: ${rerr}")
+        return
+    }
+    if doc == null {
+        respond_error(res, 400, "no events document in request")
+        return
+    }
+    defer json.json_free(doc)
+
+    // Decode every event BEFORE upgrading the connection. Once the
+    // response is tunnelled there is no status code left to send, so a
+    // malformed document has to fail while we can still answer 400.
+    stream, derr = testevents.events_frames(doc)
+    if derr != "" {
+        respond_error(res, 400, derr)
+        return
+    }
+
+    sse, serr = datastar.new_sse(res)
+    if serr != "" {
+        println("sse upgrade failed: ${serr}")
+        return
+    }
+    defer datastar.sse_close(sse)
+
+    werr = datastar.sse_send_frame(sse, stream)
+    if werr != "" { println("send failed: ${werr}") }
+}
+
+fn respond_error(res: ptr, status: int, text: string) {
+    http.http_response_set_status(res, status)
+    http.http_response_set_header(res, "Content-Type", "text/plain")
+    http.http_response_set_body(res, text)
+}
+
+main() {
+    port = DEFAULT_PORT
+    env_port = os.getenv("TEST_PORT")
+    if env_port != "" {
+        p, err = string.to_int(env_port)
+        if err == "" && p > 0 { port = p }
+    }
+
+    server = http.http_server_create(port)
+
+    // The suite exercises both transports: GET carries the document in
+    // the `datastar` query parameter, POST in the body.
+    http.http_server_get(server, "/test", test_handler, null)
+    http.http_server_post(server, "/test", test_handler, null)
+
+    bind_err = http.server_bind(server, "0.0.0.0", port)
+    if bind_err != "" {
+        println("failed to bind :${port}: ${bind_err}")
+        return 1
+    }
+
+    println("Datastar SDK test server listening on :${port}")
+    http.server_start(server)
+    return 0
+}

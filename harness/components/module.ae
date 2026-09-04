@@ -1,0 +1,95 @@
+// harness.components — the registry of mounted rectangles.
+//
+// Adding a component is: write `harness/components/<name>/module.ae`
+// exporting `mount`, `fragment` and `PATH`, then add two lines here (an
+// import and a `mount` call) plus one row in `CATALOGUE`. Nothing else
+// in the harness changes.
+//
+// That contract is what the second component was for. Everything shared
+// between rectangles — the page shell, the control surface, the index —
+// now lives outside any one of them, so the third costs the same as the
+// second rather than more.
+
+import contrib.tinyweb
+import std.string
+import std.list
+import harness.page
+import harness.components.card
+import harness.components.inbox
+
+exports(mount_all, index_page, print_mounted, catalogue)
+
+// name | path | one-line description. The index page and the startup
+// banner both read this, so a new component is announced in both places
+// from one edit.
+catalogue() -> ptr {
+    l = list.new()
+    list.add(l, "card|${card.PATH}|credit-card entry — validation, a slow processor, decline paths")
+    list.add(l, "inbox|${inbox.PATH}|filtered message list — server-rendered, patches elements")
+    return l
+}
+
+// Mount every component's routes. Called inside the harness's
+// web_server_host block, so tinyweb's builder context is live.
+mount_all(_ctx: ptr) {
+    card.mount(_ctx)
+    inbox.mount(_ctx)
+}
+
+index_page() -> string {
+    sb = ""
+    cat = catalogue()
+    n = list.size(cat)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(cat, i)
+        name = field(row, 0)
+        path = field(row, 1)
+        desc = field(row, 2)
+        sb = "${sb}  <li><a id=\"link-${name}\" href=\"${path}\">${name}</a> — ${desc}</li>\n"
+    }
+    list.free(cat)
+
+    return page.wrap("Component harness",
+        "<h1>Datastar component harness</h1>
+<p>Each link mounts one component alone, with its backend stubbed.</p>
+<ul>
+${sb}</ul>
+<h2>Harness control</h2>
+<ul>
+  <li><code>POST /_harness/backend</code> — configure a stub</li>
+  <li><code>GET  /_harness/calls</code> — what the component asked for</li>
+  <li><code>POST /_harness/reset</code> — clear between tests</li>
+</ul>")
+}
+
+print_mounted(port: int) {
+    cat = catalogue()
+    n = list.size(cat)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(cat, i)
+        name = field(row, 0)
+        path = field(row, 1)
+        println("  ${pad(name, 10)} http://127.0.0.1:${port}${path}")
+    }
+    list.free(cat)
+}
+
+// The nth pipe-separated field of a catalogue row.
+fn field(row: string, index: int) -> string {
+    start = 0
+    n = string.length(row)
+    for (f = 0; f < index; f++) {
+        at = string.index_of_from(row, "|", start)
+        if at < 0 { return "" }
+        start = at + 1
+    }
+    end = string.index_of_from(row, "|", start)
+    if end < 0 { end = n }
+    return string.substring(row, start, end)
+}
+
+fn pad(s: string, width: int) -> string {
+    out = s
+    for (i = string.length(s); i < width; i++) { out = "${out} " }
+    return out
+}

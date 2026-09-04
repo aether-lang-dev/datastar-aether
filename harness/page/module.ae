@@ -1,0 +1,40 @@
+// harness.page — the page shell every mounted component is served in.
+//
+// Shared chrome, deliberately minimal: the Datastar bundle and enough CSS
+// to be readable. No nav, no layout, no framework boot. A component test
+// navigating here should be measuring the component, not the page.
+//
+// Lives apart from any one component so a new rectangle needs no copy of
+// it, and so changing the shell (a newer Datastar pin, say) is one edit.
+
+import std.string
+
+exports(wrap, DATASTAR_BUNDLE)
+
+// Pinned to the current release. The Go SDK's examples still point at
+// 1.0.0-RC.7, which predates the attribute syntax this harness uses.
+const DATASTAR_BUNDLE = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.3/bundles/datastar.js"
+
+wrap(title: string, content: string) -> string {
+    return "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\">
+<title>${title}</title>
+<script type=\"module\" src=\"${DATASTAR_BUNDLE}\"></script>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; }
+  label { display: block; margin-top: .75rem; font-weight: 600; }
+  input { font: inherit; padding: .3rem; }
+  button { font: inherit; margin-top: 1rem; padding: .4rem 1rem; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .2rem 0; }
+  .unread { font-weight: 700; }
+  #card-status, #inbox-status { font-weight: 600; }
+</style>
+</head>
+<body>
+${content}
+</body>
+</html>"
+}

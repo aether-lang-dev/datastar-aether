@@ -1,0 +1,278 @@
+// Conformance: every case in the upstream Datastar SDK test suite,
+// asserted offline against the wire-format engine.
+//
+// `tests/golden/` is vendored verbatim from
+// github.com/starfederation/datastar (`sdk/tests/golden`). Each case is
+// an `input.json` — the `{ "events": [...] }` document the suite would
+// send — and an `output.txt` holding the SSE stream every SDK must
+// produce for it. One `it` is generated per case, so a regression names
+// the case that broke rather than "conformance failed".
+//
+// The comparison mirrors the upstream Go runner
+// (`sdk/tests/testdata.go`) rather than diffing bytes, because the
+// goldens are shared across a dozen SDKs that legitimately differ in
+// ordering:
+//
+//   - An event's fields are compared by name, so `id:` before `event:`
+//     and `event:` before `id:` both pass. (Ours emits `event:` first.)
+//   - `data:` lines are grouped by their leading keyword, so
+//     `selector`-then-`mode` and `mode`-then-`selector` both pass, while
+//     order *within* a group — the lines of a multi-line HTML fragment —
+//     stays significant.
+//
+// What this does NOT copy from the Go runner is its HTML normalization
+// (it reparses each fragment and sorts attributes). We compare the exact
+// element text instead, which is strictly stricter, and every golden
+// passes without needing the leniency.
+
+import std.spec
+import std.file
+import std.dir
+import std.string
+import std.list
+import std.map
+import std.json
+import datastar
+import datastar.testevents
+
+const GOLDEN_ROOT = "tests/golden"
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "SDK conformance — GET goldens") {
+        register_golden_dir("${GOLDEN_ROOT}/get")
+    }
+
+    spec.describe(fw, "SDK conformance — POST goldens") {
+        register_golden_dir("${GOLDEN_ROOT}/post")
+    }
+
+    return spec.run_summary(fw)
+}
+
+// Declare one `it` per case directory under `root`. Runs at registration
+// time, inside a `describe` block, so the ambient suite context is the
+// one `spec.it` wants.
+//
+// An empty directory registers a single failing case: a silent zero-case
+// pass is how a vendoring mistake turns into permanent green.
+fn register_golden_dir(root: string) {
+    entries, err = dir.list(root)
+    if err != "" {
+        spec.it("golden directory ${root} is readable") callback {
+            spec.fail("cannot list ${root}: ${err}")
+        }
+        return
+    }
+
+    cases = 0
+    n = dir.list_count(entries)
+    for (i = 0; i < n; i++) {
+        name = string.concat(dir.list_get(entries, i), "")
+        if name == "." || name == ".." { continue }
+
+        input_path = "${root}/${name}/input.json"
+        output_path = "${root}/${name}/output.txt"
+        if readable(input_path) == 0 || readable(output_path) == 0 { continue }
+
+        cases = cases + 1
+        spec.it(name) callback {
+            assert_case(name, input_path, output_path)
+        }
+    }
+    dir.list_free(entries)
+
+    if cases == 0 {
+        spec.it("golden directory ${root} holds cases") callback {
+            spec.fail("no golden cases found under ${root}")
+        }
+    }
+}
+
+fn readable(path: string) -> int {
+    _c, err = file.read(path)
+    if err != "" { return 0 }
+    return 1
+}
+
+// Run one case: decode its events, build the stream, compare to golden.
+fn assert_case(name: string, input_path: string, output_path: string) {
+    input, ierr = file.read(input_path)
+    if ierr != "" { spec.fail("${name}: cannot read input: ${ierr}"); return }
+
+    expected, oerr = file.read(output_path)
+    if oerr != "" { spec.fail("${name}: cannot read golden: ${oerr}"); return }
+
+    doc, perr = json.parse(input)
+    if perr != "" { spec.fail("${name}: bad input JSON: ${perr}"); return }
+    defer json.json_free(doc)
+
+    actual, ferr = testevents.events_frames(doc)
+    if ferr != "" { spec.fail("${name}: ${ferr}"); return }
+
+    compare_streams(name, expected, actual)
+}
+
+// ---------------------------------------------------------------------------
+// SSE stream comparison, upstream-runner semantics
+// ---------------------------------------------------------------------------
+
+// Parse a stream into a list of events, each a list of "field\tvalue"
+// strings. A flat association list rather than a map, because a field
+// may repeat (`data:` always does) and order within one name matters.
+fn parse_events(stream: string) -> ptr {
+    events = list.new()
+    current = null
+
+    lines = string.split(stream, "\n")
+    n = string.array_size(lines)
+    for (i = 0; i < n; i++) {
+        line = string.concat(string.array_get(lines, i), "")
+
+        if line == "" {
+            // A blank line terminates the event in progress.
+            if current != null {
+                list.add(events, current)
+                current = null
+            }
+            continue
+        }
+
+        colon = string.index_of(line, ":")
+        if colon < 0 { continue }
+
+        if current == null { current = list.new() }
+
+        field = string.substring(line, 0, colon)
+        value = string.trim(string.substring(line, colon + 1, string.length(line)))
+        list.add(current, "${field}\t${value}")
+    }
+    string.array_free(lines)
+
+    // A stream not ending in a blank line still has a last event.
+    if current != null { list.add(events, current) }
+    return events
+}
+
+fn compare_streams(name: string, expected: string, actual: string) {
+    exp_events = parse_events(expected)
+    act_events = parse_events(actual)
+
+    exp_n = list.size(exp_events)
+    act_n = list.size(act_events)
+    spec.assert_eq(act_n, exp_n, "${name}: event count")
+
+    if exp_n == act_n {
+        for (i = 0; i < exp_n; i++) {
+            e, _ = list.get(exp_events, i)
+            a, _ = list.get(act_events, i)
+            compare_event("${name}: event ${i + 1}", e, a)
+        }
+    }
+
+    free_events(exp_events)
+    free_events(act_events)
+}
+
+fn free_events(events: ptr) {
+    n = list.size(events)
+    for (i = 0; i < n; i++) {
+        e, _ = list.get(events, i)
+        list.free(e)
+    }
+    list.free(events)
+}
+
+// Compare one event: non-data fields by name, data lines by keyword group.
+fn compare_event(label: string, expected: ptr, actual: ptr) {
+    exp_fields = collect_fields(expected)
+    act_fields = collect_fields(actual)
+    check_sets(label, exp_fields, act_fields, "expected", "field")
+    check_sets(label, act_fields, exp_fields, "unexpected", "field")
+    map.free(exp_fields)
+    map.free(act_fields)
+
+    exp_groups = collect_data_groups(expected)
+    act_groups = collect_data_groups(actual)
+    check_sets(label, exp_groups, act_groups, "expected", "data group")
+    check_sets(label, act_groups, exp_groups, "unexpected", "data group")
+    map.free(exp_groups)
+    map.free(act_groups)
+}
+
+// Every non-data field of an event, as name -> "\n"-joined values.
+fn collect_fields(event: ptr) -> ptr {
+    out = map.new()
+    n = list.size(event)
+    for (i = 0; i < n; i++) {
+        entry, _ = list.get(event, i)
+        tab = string.index_of(entry, "\t")
+        if tab < 0 { continue }
+        field = string.substring(entry, 0, tab)
+        if field == "data" { continue }
+        value = string.substring(entry, tab + 1, string.length(entry))
+        append_to(out, field, value)
+    }
+    return out
+}
+
+// Every `data:` line of an event, as keyword -> "\n"-joined payloads.
+// `data: elements <div>` groups under "elements" with payload "<div>",
+// which is what keeps a multi-line fragment ordered while letting the
+// keyword groups themselves float.
+fn collect_data_groups(event: ptr) -> ptr {
+    out = map.new()
+    n = list.size(event)
+    for (i = 0; i < n; i++) {
+        entry, _ = list.get(event, i)
+        tab = string.index_of(entry, "\t")
+        if tab < 0 { continue }
+        field = string.substring(entry, 0, tab)
+        if field != "data" { continue }
+
+        value = string.substring(entry, tab + 1, string.length(entry))
+        space = string.index_of(value, " ")
+        keyword = value
+        payload = ""
+        if space >= 0 {
+            keyword = string.substring(value, 0, space)
+            payload = string.substring(value, space + 1, string.length(value))
+        }
+        append_to(out, keyword, payload)
+    }
+    return out
+}
+
+// Accumulate `value` under `key`, newline-joined. The map holds owned
+// strings; `string.concat` mints one that outlives the borrow.
+fn append_to(m: ptr, key: string, value: string) {
+    if map.has(m, key) == 1 {
+        prior, _ = map.get(m, key)
+        map.put(m, key, string.concat("${prior}\n${value}", ""))
+    } else {
+        map.put(m, key, string.concat(value, ""))
+    }
+}
+
+// Assert every key of `left` appears in `right`, and — when `left` is the
+// authoritative side — with the same joined value. Run both ways, so a
+// missing field and a spurious one are separate, clearly-worded failures.
+fn check_sets(label: string, left: ptr, right: ptr, direction: string, what: string) {
+    keys, err = map.keys(left)
+    if err != "" { return }
+    n = map.keys_size(keys)
+    for (i = 0; i < n; i++) {
+        k = string.concat(map.keys_get(keys, i), "")
+        if map.has(right, k) == 0 {
+            spec.fail("${label}: ${direction} ${what} '${k}'")
+            continue
+        }
+        if direction == "expected" {
+            want, _ = map.get(left, k)
+            got, _ = map.get(right, k)
+            spec.assert_str_eq(got, want, "${label}: ${what} '${k}'")
+        }
+    }
+    map.keys_free(keys)
+}

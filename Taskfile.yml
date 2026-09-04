@@ -1,0 +1,164 @@
+version: "3"
+
+vars:
+  VERSION: 0.1.0
+  # The Aether Selenium port. Override if it lives elsewhere:
+  #   task test-component SELENIUM=/path/to/selenium
+  SELENIUM: '{{.SELENIUM | default "../selenium"}}'
+  DATASTAR_BRANCH: '{{.DATASTAR_BRANCH | default "repo-per-sdk"}}'
+  TEST_PORT: '{{.TEST_PORT | default "7331"}}'
+
+tasks:
+  default:
+    cmds:
+      - task: test
+
+  test:
+    desc: Run the full test suite (conformance goldens, SDK units, streaming)
+    cmds:
+      - ae run tests/test_conformance.ae
+      - ae run tests/test_sdk.ae
+      - task: test-streaming
+
+  build-fixtures:
+    desc: Build the test fixtures tests/test_streaming.ae spawns
+    cmds:
+      - ae build tests/fixtures/tick_server.ae
+
+  # Spawns a real server and times event arrival, so it is slower and
+  # noisier than the pure suites — but it is the only check that the
+  # transport streams rather than buffers, which no golden can see.
+  test-streaming:
+    desc: Check the SSE transport delivers events incrementally
+    deps: [build-fixtures]
+    cmds:
+      - ae run tests/test_streaming.ae
+
+  test-conformance:
+    desc: Run only the upstream SDK conformance goldens
+    cmds:
+      - ae run tests/test_conformance.ae
+
+  test-unit:
+    desc: Run only the SDK unit tests
+    cmds:
+      - ae run tests/test_sdk.ae
+
+  # Each needs an explicit -o: `ae build` names the output after the
+  # entry point's function, so three files all called main.ae would
+  # otherwise overwrite one another at target/main.
+  build:
+    desc: Build every binary in cmd/
+    cmds:
+      - mkdir -p target
+      - ae build -o target/datastar-testserver cmd/testserver/main.ae
+      - ae build -o target/datastar-helloworld cmd/examples/helloworld/main.ae
+      - ae build -o target/datastar-hotreload cmd/examples/hotreload/main.ae
+
+  test-server:
+    desc: Start the SDK conformance test server on port {{.TEST_PORT}}
+    env:
+      TEST_PORT: "{{.TEST_PORT}}"
+    cmds:
+      - ae run cmd/testserver/main.ae
+
+  # The upstream runner is the cross-SDK oracle: it replays the same
+  # golden cases over HTTP that tests/test_conformance.ae replays
+  # offline. Needs `task test-server` running in another terminal, and a
+  # Go toolchain. Note its `-server` flag is dead upstream (see
+  # aether-issues.txt) — it always targets :7331.
+  test-upstream:
+    desc: Run the upstream Datastar SDK runner against a running test server
+    dir: .upstream/sdk/tests
+    deps: [test-download]
+    cmds:
+      - go test -v ./...
+
+  test-download:
+    desc: Download the upstream Datastar SDK test suite
+    status:
+      - test -d .upstream/sdk/tests
+    cmds:
+      - rm -rf .upstream && mkdir -p .upstream
+      - |
+        curl -sL https://github.com/starfederation/datastar/archive/{{.DATASTAR_BRANCH}}.tar.gz | \
+          tar xz --strip-components=1 -C .upstream
+  test-golden-update:
+    desc: Refresh tests/golden from upstream
+    deps: [test-download]
+    cmds:
+      - rm -rf tests/golden.new
+      - cp -r .upstream/sdk/tests/golden tests/golden.new
+      - cp tests/golden/README.md tests/golden.new/README.md
+      - rm -rf tests/golden && mv tests/golden.new tests/golden
+      - task: test-conformance
+
+  hello:
+    desc: Run the helloworld example on :1337
+    cmds:
+      - ae run cmd/examples/helloworld/main.ae
+
+  hotreload:
+    desc: Run the hotreload example on :9001, restarting on file changes
+    cmds:
+      - |
+        if command -v watchexec >/dev/null; then
+          watchexec -r -w cmd/examples/hotreload -w datastar -- ae run cmd/examples/hotreload/main.ae
+        elif command -v reflex >/dev/null; then
+          reflex -r '\.(ae|html)$' -s -- ae run cmd/examples/hotreload/main.ae
+        else
+          echo "No file watcher found (install watchexec or reflex); running once."
+          ae run cmd/examples/hotreload/main.ae
+        fi
+
+  # --- component testing -------------------------------------------------
+  # https://paulhammant.com/2017/02/01/ui-component-testing
+  #
+  # The harness mounts one component at a time with the slow backend
+  # stubbed; the suite drives it with Selenium. Headed on purpose — the
+  # binding's remote() sends no chromeOptions, so Chrome opens a real
+  # window and the run is watchable.
+
+  harness:
+    desc: Run the component test harness on :4321 (headed browsing / manual poking)
+    cmds:
+      - ae run cmd/harness/main.ae
+
+  # One suite per component. Both share harness_fixture, so a new
+  # rectangle means a new test_<name>.ae and one more line here.
+  #
+  # Set COMPONENT_TESTS_REQUIRED=1 in CI: without it a missing browser or
+  # harness SKIPS and exits 0, which is the right local behaviour and
+  # exactly how a suite quietly stops testing anything on a build box.
+  test-component:
+    desc: Run the Selenium component tests against a freshly started harness
+    cmds:
+      - mkdir -p target
+      - ae build -o target/harness cmd/harness/main.ae
+      - |
+        ./target/harness & HARNESS_PID=$!
+        trap "kill $HARNESS_PID 2>/dev/null" EXIT
+        # Wait for the listener rather than sleeping a guessed interval.
+        for i in $(seq 1 40); do
+          curl -sf -o /dev/null http://127.0.0.1:4321/ && break
+          sleep 0.25
+        done
+        LIB=tests/component:{{.SELENIUM}}/aether:{{.SELENIUM}}/selenium_core:{{.SELENIUM}}/selenium_core/drivermgr
+        rc=0
+        for suite in tests/component/test_*.ae; do
+          echo "--- $suite"
+          ae run "$suite" --lib "$LIB" || rc=1
+        done
+        exit $rc
+
+  test-component-ci:
+    desc: test-component, but a missing browser or harness is a FAILURE
+    env:
+      COMPONENT_TESTS_REQUIRED: "1"
+    cmds:
+      - task: test-component
+
+  fmt:
+    desc: Format all Aether sources
+    cmds:
+      - ae fmt datastar cmd tests

@@ -1,0 +1,234 @@
+// datastar.testevents — the Datastar SDK conformance-suite event decoder.
+//
+// The upstream SDK test suite (github.com/starfederation/datastar,
+// `sdk/tests`) drives every SDK through one endpoint. It posts a JSON
+// document shaped
+//
+//     { "events": [ { "type": "patchElements", "elements": "...", ... }, ... ] }
+//
+// and diffs the resulting SSE stream against a golden file. This module
+// turns one such event object into the frame the SDK should emit.
+//
+// It lives here, rather than inside cmd/testserver, so that two very
+// different consumers share one decoder:
+//
+//   - tests/test_conformance.ae runs it over the vendored golden inputs
+//     and compares strings — no socket, no port, no network.
+//   - cmd/testserver serves it on :7331 for the real upstream runner.
+//
+// If those two ever disagreed, the offline test would be worthless. One
+// decoder means they cannot.
+
+import std.string
+import std.list
+import std.json
+import datastar
+
+exports(
+    event_frame, events_frames,
+    json_field_string, json_field_int, json_field_bool
+)
+
+// JSON type tags, as std.json's `json_type` reports them.
+const JSON_NULL = 0
+const JSON_BOOL = 1
+const JSON_NUMBER = 2
+const JSON_STRING = 3
+const JSON_ARRAY = 4
+const JSON_OBJECT = 5
+
+// A field's string value, or `fallback` when the key is absent or null.
+json_field_string(obj: ptr, key: string, fallback: string) -> string {
+    if obj == null { return fallback }
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != JSON_STRING { return fallback }
+    s, err = json.get_string(v)
+    if err != "" { return fallback }
+    return s
+}
+
+// A field's integer value, or `fallback` when the key is absent or is
+// not a number.
+json_field_int(obj: ptr, key: string, fallback: int) -> int {
+    if obj == null { return fallback }
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != JSON_NUMBER { return fallback }
+    return json.json_get_int(v)
+}
+
+// A field's boolean value as 0/1, or `fallback` when the key is absent
+// or is not a boolean. The suite leans on the three-way distinction —
+// `true`, `false`, and "not mentioned" mean three different things for
+// `autoRemove` and `useViewTransition` — so `fallback` is normally -1.
+json_field_bool(obj: ptr, key: string, fallback: int) -> int {
+    if obj == null { return fallback }
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != JSON_BOOL { return fallback }
+    return json.json_get_bool(v)
+}
+
+// Build the SSE frame for one conformance event object. Returns
+// (frame, err); an unknown `type` yields ("", "unknown event type: …").
+event_frame(event: ptr) -> (string, string) {
+    if event == null { return ("", "null event") }
+
+    kind = json_field_string(event, "type", "")
+    match (kind) {
+        "patchElements" -> { return (patch_elements_frame_for(event), "") }
+        "patchSignals" -> { return (patch_signals_frame_for(event), "") }
+        "executeScript" -> { return (execute_script_frame_for(event), "") }
+        _ -> { return ("", "unknown event type: ${kind}") }
+    }
+}
+
+// Build every frame for a `{ "events": [ ... ] }` document, concatenated
+// in order — which is exactly the byte stream the golden file holds.
+// Returns (stream, err); the first bad event aborts with its error.
+events_frames(doc: ptr) -> (string, string) {
+    if doc == null { return ("", "null document") }
+
+    events, _ = json.object_get(doc, "events")
+    if events == null { return ("", "no events array") }
+    if json.json_type(events) != JSON_ARRAY { return ("", "events is not an array") }
+
+    out = ""
+    n = json.json_array_size(events)
+    for (i = 0; i < n; i++) {
+        ev, _ = json.array_get(events, i)
+        f, err = event_frame(ev)
+        if err != "" { return ("", err) }
+        out = "${out}${f}"
+    }
+    return (out, "")
+}
+
+// --- per-event-kind decoders ----------------------------------------------
+
+fn patch_elements_frame_for(event: ptr) -> string {
+    o = datastar.element_options_new()
+    defer datastar.element_options_free(o)
+
+    selector = json_field_string(event, "selector", "")
+    if selector != "" { datastar.with_selector(o, selector) }
+
+    mode = json_field_string(event, "mode", "")
+    if mode != "" {
+        // An unrecognised mode is left to the default rather than sent
+        // on: the client would reject it, and the SDK's job is to speak
+        // a valid protocol.
+        m, err = datastar.element_patch_mode_from_string(mode)
+        if err == "" { datastar.with_mode(o, m) }
+    }
+
+    ns = json_field_string(event, "namespace", "")
+    if ns != "" {
+        n, err = datastar.namespace_from_string(ns)
+        if err == "" { datastar.with_namespace(o, n) }
+    }
+
+    use_vt = json_field_bool(event, "useViewTransition", -1)
+    if use_vt >= 0 {
+        datastar.with_use_view_transitions(o, use_vt)
+        if use_vt == 1 {
+            vts = json_field_string(event, "viewTransitionSelector", "")
+            if vts != "" { datastar.with_view_transition_selector(o, vts) }
+        }
+    }
+
+    event_id = json_field_string(event, "eventId", "")
+    if event_id != "" { datastar.with_event_id(o, event_id) }
+
+    retry = json_field_int(event, "retryDuration", 0)
+    if retry > 0 { datastar.with_retry_duration(o, retry) }
+
+    elements = json_field_string(event, "elements", "")
+    return datastar.patch_elements_frame(elements, o)
+}
+
+fn patch_signals_frame_for(event: ptr) -> string {
+    o = datastar.signal_options_new()
+    defer datastar.signal_options_free(o)
+
+    only_if_missing = json_field_bool(event, "onlyIfMissing", -1)
+    if only_if_missing >= 0 { datastar.with_only_if_missing(o, only_if_missing) }
+
+    event_id = json_field_string(event, "eventId", "")
+    if event_id != "" { datastar.with_event_id(o, event_id) }
+
+    retry = json_field_int(event, "retryDuration", 0)
+    if retry > 0 { datastar.with_retry_duration(o, retry) }
+
+    // `signals-raw` carries a JSON document verbatim, newlines and all,
+    // so the suite can check that a multi-line payload survives the
+    // dataline split. `signals` is a real JSON value that we re-serialize
+    // compactly. Neither is required; absent means `{}`.
+    raw = json_field_string(event, "signals-raw", "")
+    if raw != "" {
+        return datastar.patch_signals_frame(raw, o)
+    }
+
+    signals, _ = json.object_get(event, "signals")
+    if signals == null {
+        return datastar.patch_signals_frame("{}", o)
+    }
+
+    payload, err = json.stringify(signals)
+    if err != "" { payload = "{}" }
+    return datastar.patch_signals_frame(payload, o)
+}
+
+fn execute_script_frame_for(event: ptr) -> string {
+    o = datastar.script_options_new()
+    defer datastar.script_options_free(o)
+
+    auto_remove = json_field_bool(event, "autoRemove", -1)
+    if auto_remove >= 0 { datastar.with_auto_remove(o, auto_remove) }
+
+    // `attributes` is a JSON object, and its key order is the attribute
+    // order on the emitted <script>. std.json preserves insertion order
+    // across parse (a documented contract), so walking the entries in
+    // index order reproduces the source document's order — no special
+    // casing of "type" and "blocking" needed.
+    attrs, _ = json.object_get(event, "attributes")
+    if attrs != null && json.json_type(attrs) == JSON_OBJECT {
+        n = json.json_object_size_raw(attrs)
+        for (i = 0; i < n; i++) {
+            key = json.json_object_key_at(attrs, i)
+            val = json.json_object_value_at(attrs, i)
+            datastar.with_script_attribute_kv(o, string.concat(key, ""), json_scalar_string(val))
+        }
+    }
+
+    event_id = json_field_string(event, "eventId", "")
+    if event_id != "" { datastar.with_event_id(o, event_id) }
+
+    retry = json_field_int(event, "retryDuration", 0)
+    if retry > 0 { datastar.with_retry_duration(o, retry) }
+
+    script = json_field_string(event, "script", "")
+    return datastar.execute_script_frame(script, o)
+}
+
+// Render a JSON scalar the way Go's `%v` would, so an attribute value
+// that arrives as a number or a bool still lands as `key="value"`.
+fn json_scalar_string(v: ptr) -> string {
+    if v == null { return "" }
+    t = json.json_type(v)
+    if t == JSON_STRING {
+        s, err = json.get_string(v)
+        if err != "" { return "" }
+        return s
+    }
+    if t == JSON_BOOL {
+        if json.json_get_bool(v) == 1 { return "true" }
+        return "false"
+    }
+    if t == JSON_NULL { return "null" }
+    // Numbers, arrays and objects fall through to their JSON spelling.
+    s, err = json.stringify(v)
+    if err != "" { return "" }
+    return s
+}

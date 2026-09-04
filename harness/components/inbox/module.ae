@@ -1,0 +1,165 @@
+// harness.components.inbox — a filtered message list.
+//
+// The second rectangle, chosen to be structurally unlike the card:
+//
+//   - It patches **elements**, not just signals. The card only ever sent
+//     `datastar-patch-signals`; this rebuilds a `<ul>` server-side and
+//     sends it as `datastar-patch-elements` with an inner-mode patch.
+//     Half the SDK went untested through a browser until this existed.
+//   - Its backing store is a *corpus* the test seeds, not a single
+//     programmable verdict — so the interesting assertions are about
+//     what came back and in what order, not just whether it succeeded.
+//   - It has an empty state, an error state, and a filter that must
+//     survive a re-query. Those are the states a list gets wrong.
+
+import contrib.tinyweb
+import std.string
+import std.list
+import std.map
+import std.json
+import std.strbuilder
+import datastar
+import harness.page
+import harness.stub.messages
+
+exports(mount, fragment, PATH)
+
+const PATH = "/c/inbox"
+
+mount(_ctx: ptr) {
+    tinyweb.end_point(_ctx, tinyweb.GET, PATH) | req: ptr, res: ptr, ctx: ptr | {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write(res, page.wrap("Inbox component", fragment()))
+    }
+
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/search") | req: ptr, res: ptr, ctx: ptr | {
+        search(req, res)
+    }
+}
+
+// The rectangle. `#inbox-list` starts empty and is replaced wholesale by
+// each search; everything else is signal-driven.
+fragment() -> string {
+    return "<div id=\"inbox-component\" data-signals=\"{filter:'',unreadonly:false,status:'idle',message:''}\">
+  <h2>Inbox</h2>
+
+  <label for=\"inbox-filter\">Filter</label>
+  <input id=\"inbox-filter\" data-bind:filter=\"\" autocomplete=\"off\">
+
+  <label for=\"inbox-unread\">
+    <input id=\"inbox-unread\" type=\"checkbox\" data-bind:unreadonly=\"\"> unread only
+  </label>
+
+  <button id=\"inbox-search\" data-on:click=\"@post('/c/inbox/search')\">Search</button>
+
+  <p id=\"inbox-status\" data-text=\"\$status\"></p>
+  <p id=\"inbox-message\" data-text=\"\$message\"></p>
+
+  <ul id=\"inbox-list\"></ul>
+</div>"
+}
+
+// POST /c/inbox/search — query the store, render the list server-side,
+// and patch it into `#inbox-list`.
+fn search(req: ptr, res: ptr) {
+    signals, serr = datastar.read_signals(req)
+
+    filter = ""
+    unread_only = 0
+    if serr == "" && signals != null {
+        filter = sig_str(signals, "filter")
+        unread_only = sig_bool(signals, "unreadonly")
+    }
+    if signals != null { json.json_free(signals) }
+
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+
+    matches, qerr = messages.query(filter, unread_only)
+
+    if qerr != "" {
+        // The store failed. Say so in the status line and leave whatever
+        // is on screen alone — blanking a list on a transient error is a
+        // good way to make a flaky backend look like data loss.
+        _e = datastar.patch_signals(sse,
+            "{\"status\":\"error\",\"message\":${datastar.json_quote(qerr)}}", null)
+        return
+    }
+
+    n = 0
+    if matches != null { n = list.size(matches) }
+
+    // Patch the list itself — inner mode, so the <ul> element survives
+    // and only its children are replaced.
+    _p = datastar.patch_elements_with(sse, render_items(matches)) {
+        datastar.with_selector("#inbox-list")
+        datastar.with_mode_inner()
+    }
+
+    if matches != null { list.free(matches) }
+
+    status = "ok"
+    msg = "${n} message(s)"
+    if n == 0 {
+        status = "empty"
+        msg = "No messages match"
+    }
+    _s = datastar.patch_signals(sse,
+        "{\"status\":${datastar.json_quote(status)},\"message\":${datastar.json_quote(msg)}}", null)
+}
+
+// The list's children, as HTML. Rendering server-side is the Datastar
+// way round: the server owns the markup, the client just patches it in.
+fn render_items(matches: ptr) -> string {
+    if matches == null { return "" }
+    n = list.size(matches)
+    if n == 0 { return "" }
+
+    sb = strbuilder.new(256)
+    for (i = 0; i < n; i++) {
+        m, _ = list.get(matches, i)
+        if m == null { continue }
+        sender, _ = map.get(m, "sender")
+        subject, _ = map.get(m, "subject")
+        unread, _ = map.get(m, "unread")
+
+        cls = ""
+        if string.equals(unread, "1") == 1 { cls = " class=\"unread\"" }
+
+        strbuilder.append(sb, "<li data-testid=\"inbox-item\"")
+        strbuilder.append(sb, cls)
+        strbuilder.append(sb, ">")
+        strbuilder.append(sb, escape_html(sender))
+        strbuilder.append(sb, " — ")
+        strbuilder.append(sb, escape_html(subject))
+        strbuilder.append(sb, "</li>")
+    }
+    return strbuilder.finish(sb)
+}
+
+// Message text is attacker-controlled in any real inbox, and this is a
+// component people will copy. Escape it.
+fn escape_html(s: string) -> string {
+    out = string.replace_all(s, "&", "&amp;")
+    out = string.replace_all(out, "<", "&lt;")
+    out = string.replace_all(out, ">", "&gt;")
+    out = string.replace_all(out, "\"", "&quot;")
+    return out
+}
+
+fn sig_str(obj: ptr, key: string) -> string {
+    v, _ = json.object_get(obj, key)
+    if v == null { return "" }
+    if json.json_type(v) != 3 { return "" }
+    s, err = json.get_string(v)
+    if err != "" { return "" }
+    return s
+}
+
+fn sig_bool(obj: ptr, key: string) -> int {
+    v, _ = json.object_get(obj, key)
+    if v == null { return 0 }
+    if json.json_type(v) != 1 { return 0 }
+    return json.json_get_bool(v)
+}

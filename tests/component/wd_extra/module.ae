@@ -1,0 +1,126 @@
+// wd_extra — the two WebDriver verbs the Aether binding does not wrap yet,
+// plus the model-injection helper the UI Component Testing post argues for.
+//
+// `selenium_core` (the shared engine) already routes `sendKeysToElement`
+// and `clearElement`; `aether/webdriver.ae` just has no wrapper for them
+// yet. Rather than patch the Selenium repo from here, this reaches the
+// engine directly the same way the binding does — `selenium_core.execute`
+// with the command name and a JSON body.
+//
+// The interesting one is `set_signals`. The post reaches for ngWebDriver:
+//
+//     ngWebDriver.mutate(formElement, "card",
+//         "{'num': 5105105105105100, 'expMM': 11, ...}")
+//
+// — one Selenium operation to push state into the model, instead of
+// typing into four fields. Angular needed a bespoke bridge for that.
+// Datastar does not: signals ARE the model, and the client exposes them,
+// so the equivalent is one `execute_script` that assigns to the signal
+// store. Same idea, no back door required.
+
+import selenium_core
+import webdriver
+import std.string
+import std.json
+
+exports(
+    send_keys, clear, set_signals, get_signal, wait_for_text
+)
+
+// Type into an element. `text` is sent as a single-element text array,
+// which is the W3C shape for elementSendKeys.
+send_keys(sp: ptr, elem_id: string, text: string) -> int {
+    body = "{\"id\":${qs(elem_id)},\"text\":${qs(text)},\"value\":[${qs(text)}]}"
+    return exec(sp, "sendKeysToElement", body)
+}
+
+// Empty an input before typing into it.
+clear(sp: ptr, elem_id: string) -> int {
+    return exec(sp, "clearElement", "{\"id\":${qs(elem_id)}}")
+}
+
+// Push state straight into the component's model — the ngWebDriver.mutate
+// equivalent. `patch_json` is a JSON object merged into the signal store,
+// so a whole card is one call instead of four rounds of typing:
+//
+//     wd_extra.set_signals(d, "{\"card\":{\"num\":\"4242...\",\"expMM\":\"11\"}}")
+//
+// This is the "inject the credit card details into the model in a single
+// Selenium operation" move from the post. It is gray-box on purpose: it
+// skips the typing to get to the state worth asserting on.
+set_signals(sp: ptr, fields_json: string) -> string {
+    // Datastar v1.0.3 exposes no global object to poke, and its
+    // `datastar-patch-signals` CustomEvent is one the client EMITS, not
+    // one it listens for — dispatching it changes nothing (checked in a
+    // real browser).
+    //
+    // So the injection point is the one the client genuinely watches:
+    // `data-bind` subscribes to the input event, so setting an input's
+    // value and firing `input` puts the value into the signal store
+    // exactly as typing would — minus four round trips of send_keys.
+    //
+    // `fields_json` maps element id -> value:
+    //     {"card-num":"4242...","card-expmonth":"11"}
+    //
+    // Same effect as ngWebDriver.mutate: one Selenium operation to set
+    // the model. It goes through the binding rather than around it,
+    // which makes it a slightly stronger test than poking a store.
+    script = "const f = ${fields_json}; let n = 0; for (const id in f) { const el = document.getElementById(id); if (!el) continue; el.value = f[id]; el.dispatchEvent(new Event('input', {bubbles: true})); n++; } return String(n);"
+    return webdriver.execute_script(sp, script, "[]")
+}
+
+// Read one signal back out, by dotted path (e.g. "status", "card.num").
+get_signal(sp: ptr, path: string) -> string {
+    script = "const s = window.ds ? window.ds.signals : null; if (!s) { return ''; } const v = s.value ? s.value(${qs(path)}) : undefined; return v === undefined ? '' : String(v);"
+    return webdriver.execute_script(sp, script, "[]")
+}
+
+// Poll an element's text until it equals `want`, or the budget runs out.
+// Returns 1 on match, 0 on timeout.
+//
+// Datastar patches the DOM when the SSE event lands, so an assertion made
+// the instant after a click races the network. This is the one place a
+// component test needs to wait — and the wait is milliseconds, not the
+// seconds a full-stack test spends.
+wait_for_text(sp: ptr, by: string, value: string, want: string, budget_ms: int) -> int {
+    // One round trip per poll, not two. The obvious shape — find() then
+    // element_text() — costs two WebDriver commands per iteration, and at
+    // a 25ms poll that dominates the test. Reading the text in-page with
+    // a single script halves the traffic and, more importantly, removes
+    // the find() failure case (a missing element is just "").
+    //
+    // `by` is accepted for symmetry with the rest of the API but only
+    // the id strategy is used here; broadening it means swapping the
+    // querySelector call for a strategy switch.
+    script = "const el = document.getElementById(${qs(value)}); return el ? el.textContent : '';"
+    for (waited = 0; waited <= budget_ms; waited = waited + 15) {
+        got = webdriver.execute_script(sp, script, "[]")
+        // execute_script returns the JSON-encoded value, so a string
+        // result arrives quoted.
+        if string.contains(got, want) == 1 { return 1 }
+        sleep(15)
+    }
+    return 0
+}
+
+// --- internals -------------------------------------------------------------
+
+// The engine's Session handle lives at offset 0 of the binding's
+// WdSession struct; `webdriver.ae` keeps `engine` as its first field.
+struct WdSessionHead {
+    engine: ptr
+}
+
+fn exec(sp: ptr, cmd: string, body: string) -> int {
+    if sp == null { return -1 }
+    s = sp as *WdSessionHead
+    return selenium_core.execute(s.engine, cmd, body)
+}
+
+fn qs(s: string) -> string {
+    v = json.json_create_string(s)
+    out, err = json.stringify(v)
+    json.json_free(v)
+    if err != "" { return "\"\"" }
+    return out
+}

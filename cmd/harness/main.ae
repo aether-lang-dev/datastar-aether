@@ -1,0 +1,138 @@
+// A component test harness for Datastar — the "smallest rectangle" server.
+//
+// Background: https://paulhammant.com/2017/02/01/ui-component-testing
+//
+// The argument there is that most Selenium suites drive whole pages, or
+// whole sequences of pages, and are therefore slow. The alternative is
+// to test the smallest rectangle you reasonably can — a component in a
+// harness that never ships to production — with the slow parts of the
+// stack replaced by something instant. Then you get multiple *tests* a
+// second, not multiple clicks a second.
+//
+// This is that harness for a Datastar app. It serves:
+//
+//   GET  /                      an index of every mounted component
+//   GET  /c/<name>              one component, alone on a page
+//   GET|POST /c/<name>/<action> the component's Datastar endpoints
+//   POST /_harness/backend      configure the card stub's verdict
+//   GET  /_harness/calls        what the card component asked for
+//   POST /_harness/messages     seed the inbox stub's corpus
+//   GET  /_harness/queries      what the inbox component asked for
+//   POST /_harness/reset        clear every stub between tests
+//
+// Two things make a Datastar component unusually easy to harness:
+//
+//   1. There is no client-side component framework to boot. A component
+//      is an HTML fragment plus the endpoints that patch it, so mounting
+//      one in isolation is just serving that fragment.
+//
+//   2. The model is reachable without a framework bridge. The post
+//      reaches for ngWebDriver's `mutate(el, "card", {...})` to push
+//      state into an Angular model without driving the UI; here the
+//      equivalent is setting the bound inputs and firing `input`, which
+//      goes through the binding rather than around it.
+//
+// The stubs are what earn the speed. A real card authorization is a
+// network round trip to a payment processor and a real inbox query is a
+// database; here both are in-process maps the test set up a moment
+// earlier.
+//
+// There are two stub SHAPES on purpose, because rectangles sit on two
+// kinds of slow thing: `harness.stub.cards` is a *response* stub (one
+// call in, one programmable verdict out) and `harness.stub.messages` is
+// a *data* stub (seed a corpus, query it).
+
+import contrib.tinyweb
+import std.string
+import std.list
+import std.map
+import std.json
+import std.os
+import datastar
+import harness.components
+import harness.stub.cards
+import harness.stub.messages
+
+const DEFAULT_PORT = 4321
+
+main() {
+    port = DEFAULT_PORT
+    env_port = os.getenv("HARNESS_PORT")
+    if env_port != "" {
+        p, perr = string.to_int(env_port)
+        if perr == "" && p > 0 { port = p }
+    }
+
+    cards.init()
+    messages.init()
+
+    server = tinyweb.web_server_host("127.0.0.1", port) {
+        // --- the harness's own surface ------------------------------------
+        tinyweb.end_point(tinyweb.GET, "/") | req: ptr, res: ptr, ctx: ptr | {
+            tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+            tinyweb.response_write(res, components.index_page())
+        }
+
+        // Configure the stub backend for the test about to run: which
+        // responses to give, and whether to be slow or fail. Being able to
+        // say "the processor declines this card" in one HTTP call is what
+        // replaces standing up a real processor sandbox.
+        tinyweb.end_point(tinyweb.POST, "/_harness/backend") | req: ptr, res: ptr, ctx: ptr | {
+            body = tinyweb.request_get_body(req)
+            err = cards.configure(body)
+            if err != "" {
+                tinyweb.response_write_status(res, "{\"ok\":false,\"error\":\"${err}\"}", 400)
+                return
+            }
+            tinyweb.response_json(res, "{\"ok\":true}")
+        }
+
+        // What did the component actually ask the backend for? A component
+        // test asserts on the DOM, but sometimes the interesting claim is
+        // "it called authorize exactly once, with this PAN" — the gray-box
+        // half the post says is worth the setup cost.
+        tinyweb.end_point(tinyweb.GET, "/_harness/calls") | req: ptr, res: ptr, ctx: ptr | {
+            tinyweb.response_json(res, cards.calls_json())
+        }
+
+        // The inbox's store is a *corpus*, not a verdict, so it gets its
+        // own seed verb rather than being bent into /backend.
+        tinyweb.end_point(tinyweb.POST, "/_harness/messages") | req: ptr, res: ptr, ctx: ptr | {
+            body = tinyweb.request_get_body(req)
+            err = messages.seed(body)
+            if err != "" {
+                tinyweb.response_write_status(res, "{\"ok\":false,\"error\":\"${err}\"}", 400)
+                return
+            }
+            tinyweb.response_json(res, "{\"ok\":true}")
+        }
+
+        tinyweb.end_point(tinyweb.GET, "/_harness/queries") | req: ptr, res: ptr, ctx: ptr | {
+            tinyweb.response_json(res, messages.calls_json())
+        }
+
+        tinyweb.end_point(tinyweb.POST, "/_harness/reset") | req: ptr, res: ptr, ctx: ptr | {
+            // One reset clears every stub, so a test's before_each need not
+            // know which components exist.
+            cards.reset()
+            messages.reset()
+            tinyweb.response_json(res, "{\"ok\":true}")
+        }
+
+        // --- the mounted components ---------------------------------------
+        // Each mounts its own page route and its own Datastar endpoints.
+        components.mount_all()
+    }
+
+    println("Datastar component harness on http://127.0.0.1:${port}")
+    println("  index:      http://127.0.0.1:${port}/")
+    components.print_mounted(port)
+
+    start_err = tinyweb.tw_start(server)
+    if start_err != "" {
+        println("failed to start: ${start_err}")
+        return 1
+    }
+    tinyweb.tw_stop(server)
+    return 0
+}

@@ -1,0 +1,49 @@
+// Fixture for tests/test_streaming.ae — a server that emits a fixed
+// number of patches at a fixed interval, so the test can check the
+// events arrive as they are produced rather than in one buffered lump
+// at the end.
+//
+// Not a test itself: `ae test` must not run it (it blocks), which is
+// why it lives under tests/fixtures/ rather than being named test_*.
+
+import contrib.tinyweb
+import std.os
+import std.string
+import datastar
+
+const TICKS = 4
+const INTERVAL_MS = 250
+
+main() {
+    port = 7355
+    env_port = os.getenv("TICK_PORT")
+    if env_port != "" {
+        p, err = string.to_int(env_port)
+        if err == "" && p > 0 { port = p }
+    }
+
+    server = tinyweb.web_server_host("127.0.0.1", port) {
+        tinyweb.end_point(tinyweb.GET, "/ticks") | req: ptr, res: ptr, ctx: ptr | {
+            sse, serr = datastar.new_sse(res)
+            if serr != "" { return }
+
+            for (i = 0; i < TICKS; i++) {
+                e = datastar.patch_elements(sse, "<div id=\"t\">tick ${i}</div>", null)
+                if e != "" { break }
+                sleep(INTERVAL_MS)
+            }
+
+            // One stream and done. The test reaps this process with
+            // os.wait, which blocks until it exits — a server that ran
+            // forever would hang the suite instead of failing it. Exit
+            // here rather than returning, because tw_start's accept loop
+            // never comes back on its own.
+            datastar.sse_close(sse)
+            os.exit(0)
+        }
+    }
+
+    tinyweb.tw_start(server)
+    tinyweb.tw_stop(server)
+    return 0
+}

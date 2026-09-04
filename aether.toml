@@ -1,0 +1,23 @@
+[package]
+name = "datastar-aether"
+version = "0.1.0"
+license = "MIT"
+description = "Aether SDK for Datastar — hypermedia-driven UIs over SSE"
+repository = "https://github.com/paul-hammant/datastar-aether"
+readme = "README.md"
+keywords = ["datastar", "sse", "hypermedia", "web"]
+
+[build]
+target = "native"
+
+[[bin]]
+name = "datastar-testserver"
+path = "cmd/testserver/main.ae"
+
+[[bin]]
+name = "datastar-helloworld"
+path = "cmd/examples/helloworld/main.ae"
+
+[[bin]]
+name = "datastar-hotreload"
+path = "cmd/examples/hotreload/main.ae"

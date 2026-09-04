@@ -1,0 +1,171 @@
+// harness_fixture — the bits every component suite needs: a browser
+// session, harness control, and the two speed levers.
+//
+// Shared so that adding a component suite does not mean copying session
+// setup and reset plumbing.
+
+import std.spec
+import std.string
+import std.http
+import std.json
+import std.os
+import webdriver
+import driver
+import wd_extra
+
+exports(
+    HARNESS,
+    open_browser, close_browser, require_browser, strict_mode,
+    reset, harness_up, post, get_raw,
+    click_fast,
+    fill_fast, click, wait_text, backend_calls
+)
+
+const HARNESS = "http://127.0.0.1:4321"
+
+// The chromedriver process behind the current session.
+//
+// Held at module scope because `driver.ensure` spawns a real OS process
+// and hands back the only handle that can reap it, while the session
+// `webdriver.remote` returns knows nothing about it. Quitting the
+// session ends the BROWSER; it does not stop the DRIVER. Dropping this
+// handle leaks a chromedriver per run — 31 of them had accumulated on
+// this box before it was noticed, all with no browser attached.
+//
+// One suite runs one session at a time, so a single slot is enough.
+var _driver: ptr = null
+
+// Open a headed session, or null if none can be had.
+//
+// Headed on purpose: webdriver.remote() sends no chromeOptions, so
+// Chrome opens a real window. webdriver.chrome() would work too but
+// hardcodes --headless=new with no way to override it.
+open_browser() -> ptr {
+    dh = driver.ensure("chrome", "", 20000)
+    if dh == null { return null }
+    _driver = dh
+    return webdriver.remote(driver.url_of(dh))
+}
+
+// End the session, then reap the driver process behind it. Order
+// matters: quitting the session first lets chromedriver shut its
+// browser down cleanly, so the SIGTERM lands on an idle process.
+// `driver.stop` is null-safe and safe once.
+close_browser(d: ptr) {
+    if d != null { webdriver.quit(d) }
+    if _driver != null {
+        driver.stop(_driver)
+        _driver = null
+    }
+}
+
+// Decide what a missing browser or harness MEANS.
+//
+// Locally, skipping is right: not everyone has a driver, and a suite
+// that cannot run should not fail a laptop build. In CI it is the
+// opposite — a skip that reports as a pass is how a suite quietly stops
+// testing anything, which is the same class of lie as a stale cache.
+//
+// So: set COMPONENT_TESTS_REQUIRED=1 in CI. Returns "" when the suite
+// should run, or a reason to stop.
+require_browser(d: ptr) -> string {
+    required = os.getenv("COMPONENT_TESTS_REQUIRED")
+    strict = 0
+    if required == "1" || required == "true" { strict = 1 }
+
+    if d == null {
+        if strict == 1 { return "FAILED: no browser session (COMPONENT_TESTS_REQUIRED=1)" }
+        return "SKIPPED: could not open a browser session"
+    }
+    if harness_up() == 0 {
+        if strict == 1 { return "FAILED: no harness on ${HARNESS} (COMPONENT_TESTS_REQUIRED=1)" }
+        return "SKIPPED: no harness on ${HARNESS} — run `task harness` first"
+    }
+    return ""
+}
+
+// 1 when the strict flag is set, so a caller can turn a skip into a
+// non-zero exit.
+strict_mode() -> int {
+    required = os.getenv("COMPONENT_TESTS_REQUIRED")
+    if required == "1" || required == "true" { return 1 }
+    return 0
+}
+
+harness_up() -> int {
+    _b, err = http.get("${HARNESS}/")
+    if err != "" { return 0 }
+    return 1
+}
+
+reset() {
+    _e = post("/_harness/reset", "{}")
+}
+
+post(path: string, body: string) -> string {
+    _b, err = http.post("${HARNESS}${path}", body, "application/json")
+    return err
+}
+
+// GET a harness endpoint and hand back the raw body, for assertions that
+// want the whole payload rather than one decoded field.
+get_raw(path: string) -> (string, string) {
+    return http.get("${HARNESS}${path}")
+}
+
+// --- the speed levers ------------------------------------------------------
+
+// Set several bound inputs in ONE round trip.
+//
+// The obvious shape — send_keys per field — costs one WebDriver command
+// per field, each typing character by character, and that was ~900ms of
+// a ~1.1s test. This sets each input's value and fires `input`, which is
+// the event `data-bind` subscribes to, so the values land in the signal
+// store exactly as typing would.
+//
+// Use send_keys where the TYPING is what is under test; use this
+// everywhere else.
+fill_fast(d: ptr, fields_json: string) -> string {
+    return wd_extra.set_signals(d, fields_json)
+}
+
+// A real WebDriver click: scroll-into-view, hit-test, native input
+// event. Correct, and 300-700ms of every test that uses it — by far the
+// largest remaining cost once the fields are filled in one round trip.
+//
+// Use it where the CLICK is what is under test (hit targets, overlays,
+// disabled states). Use click_fast elsewhere.
+click(d: ptr, id: string) {
+    el = webdriver.find(d, webdriver.By_ID(), id)
+    if string.length(el) > 0 { webdriver.click(d, el) }
+}
+
+// Dispatch the click in-page: one round trip, no hit-testing. This still
+// runs the component's real `data-on:click` handler — it skips the
+// browser's input plumbing, not the component's behaviour.
+click_fast(d: ptr, id: string) -> string {
+    script = "const el = document.getElementById(${qs(id)}); if (!el) { return 'no element'; } el.click(); return 'ok';"
+    return webdriver.execute_script(d, script, "[]")
+}
+
+fn qs(s: string) -> string {
+    return "\"${s}\""
+}
+
+// Wait for an element's text to contain `want`. One round trip per poll.
+wait_text(d: ptr, id: string, want: string, budget_ms: int) -> int {
+    return wd_extra.wait_for_text(d, webdriver.By_ID(), id, want, budget_ms)
+}
+
+// How many times a component called its backend, from the harness's own
+// recorder. `path` is /_harness/calls or /_harness/queries.
+backend_calls(path: string) -> int {
+    body, err = http.get("${HARNESS}${path}")
+    if err != "" { return -1 }
+    doc, perr = json.parse(body)
+    if perr != "" { return -1 }
+    defer json.json_free(doc)
+    v, _ = json.object_get(doc, "count")
+    if v == null { return -1 }
+    return json.json_get_int(v)
+}

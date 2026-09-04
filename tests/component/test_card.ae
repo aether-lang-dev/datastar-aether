@@ -1,0 +1,195 @@
+// Component tests for the credit-card rectangle.
+//
+// Background: https://paulhammant.com/2017/02/01/ui-component-testing
+//
+// Each test drives ONE component in a harness page, with the payment
+// processor replaced by an in-process stub the test configures a moment
+// before. Nothing boots an app, logs in, or navigates a sequence of
+// pages: the browser stays open across the whole suite and a test is a
+// navigate plus a handful of interactions.
+//
+// The failure cases are the point. "The processor declines this card"
+// and "the processor times out" are one HTTP call each here; through a
+// full-stack test they need a processor sandbox that can be made to
+// decline on demand, which is why those paths usually go untested.
+//
+// Run:  task test-component     (starts the harness, runs every suite)
+
+import std.spec
+import std.string
+import std.os
+import webdriver
+import wd_extra
+import harness_fixture
+
+const CARD_URL = "http://127.0.0.1:4321/c/card"
+
+// A Luhn-valid test PAN (the classic Visa test number).
+const GOOD_PAN = "4242424242424242"
+// Same digits, last one changed — right length, fails Luhn.
+const BAD_LUHN = "4242424242424241"
+
+main() {
+    d = harness_fixture.open_browser()
+    stop = harness_fixture.require_browser(d)
+    if stop != "" {
+        println(stop)
+        harness_fixture.close_browser(d)
+        if harness_fixture.strict_mode() == 1 { return 1 }
+        return 0
+    }
+    rc = run(d)
+    harness_fixture.close_browser(d)
+    return rc
+}
+
+fn run(d: ptr) -> int {
+    t0 = os.now_monotonic_ms()
+    fw = spec.init()
+
+    spec.describe(fw, "card — validation (backend never called)") {
+        spec.it("rejects an empty card number") callback {
+            fresh(d)
+            fill(d, "", "11", "2031", "123")
+            submit(d)
+            expect(d, "invalid", "Card number is required")
+            expect_calls(0)
+        }
+
+        spec.it("rejects a number that fails the Luhn check") callback {
+            fresh(d)
+            fill(d, BAD_LUHN, "11", "2031", "123")
+            submit(d)
+            expect(d, "invalid", "Card number is not valid")
+            // Validation short-circuits, so the processor is never
+            // troubled. Invisible from the DOM alone.
+            expect_calls(0)
+        }
+
+        spec.it("rejects an out-of-range expiry month") callback {
+            fresh(d)
+            fill(d, GOOD_PAN, "13", "2031", "123")
+            submit(d)
+            expect(d, "invalid", "Expiry month must be 01-12")
+            expect_calls(0)
+        }
+
+        spec.it("rejects a two-digit security code") callback {
+            fresh(d)
+            fill(d, GOOD_PAN, "11", "2031", "12")
+            submit(d)
+            expect(d, "invalid", "Security code must be 3 or 4 digits")
+            expect_calls(0)
+        }
+    }
+
+    spec.describe(fw, "card — backend outcomes") {
+        spec.it("shows the auth code when the processor approves") callback {
+            fresh(d)
+            backend("{\"outcome\":\"approve\",\"authCode\":\"AUTH-7\"}")
+            fill(d, GOOD_PAN, "11", "2031", "123")
+            submit(d)
+            expect(d, "approved", "Authorized AUTH-7")
+            expect_calls(1)
+        }
+
+        spec.it("surfaces the processor's decline reason") callback {
+            fresh(d)
+            backend("{\"outcome\":\"decline\",\"message\":\"Insufficient funds\"}")
+            fill(d, GOOD_PAN, "11", "2031", "123")
+            submit(d)
+            expect(d, "declined", "Insufficient funds")
+        }
+
+        spec.it("surfaces a processor error as a decline") callback {
+            fresh(d)
+            backend("{\"outcome\":\"error\",\"message\":\"processor timeout\"}")
+            fill(d, GOOD_PAN, "11", "2031", "123")
+            submit(d)
+            expect(d, "declined", "processor timeout")
+        }
+
+        spec.it("shows a pending state while the processor is slow") callback {
+            fresh(d)
+            // The one test that WANTS latency: long enough to observe the
+            // intermediate state, short enough to stay fast.
+            backend("{\"outcome\":\"approve\",\"delayMs\":600}")
+            fill(d, GOOD_PAN, "11", "2031", "123")
+            submit(d)
+            spec.assert_eq(harness_fixture.wait_text(d, "card-status", "pending", 3000), 1,
+                "pending is visible while the processor works")
+            spec.assert_eq(harness_fixture.wait_text(d, "card-status", "approved", 3000), 1,
+                "and it resolves to approved")
+        }
+    }
+
+    spec.describe(fw, "card — real typing") {
+        // Everything above fills the form in one round trip. This one
+        // types character by character, because the BINDING is what is
+        // under test: if data-bind ever broke, only this would catch it.
+        spec.it("binds each field as the user types") callback {
+            fresh(d)
+            backend("{\"outcome\":\"approve\",\"authCode\":\"TYPED\"}")
+            type_into(d, "card-num", GOOD_PAN)
+            type_into(d, "card-exp-mm", "11")
+            type_into(d, "card-exp-yy", "2031")
+            type_into(d, "card-sec", "123")
+            submit(d)
+            expect(d, "approved", "Authorized TYPED")
+        }
+    }
+
+    elapsed = os.now_monotonic_ms() - t0
+    count = 9
+    println("")
+    println("  ${count} card tests in ${elapsed}ms (~${elapsed / count}ms each)")
+
+    return spec.run_summary(fw)
+}
+
+// --- helpers ---------------------------------------------------------------
+
+fn fresh(d: ptr) {
+    harness_fixture.reset()
+    webdriver.get(d, CARD_URL)
+}
+
+fn backend(config_json: string) {
+    _e = harness_fixture.post("/_harness/backend", config_json)
+}
+
+// Fill all four fields in ONE round trip. See harness_fixture.fill_fast.
+fn fill(d: ptr, num: string, mm: string, yy: string, sec: string) {
+    _r = harness_fixture.fill_fast(d,
+        "{\"card-num\":${q(num)},\"card-exp-mm\":${q(mm)},\"card-exp-yy\":${q(yy)},\"card-sec\":${q(sec)}}")
+}
+
+fn type_into(d: ptr, id: string, text: string) {
+    el = webdriver.find(d, webdriver.By_ID(), id)
+    if string.length(el) == 0 { return }
+    _c = wd_extra.clear(d, el)
+    if string.length(text) > 0 { _s = wd_extra.send_keys(d, el, text) }
+}
+
+fn submit(d: ptr) {
+    _r = harness_fixture.click_fast(d, "card-submit")
+}
+
+fn expect(d: ptr, status: string, msg: string) {
+    ok = harness_fixture.wait_text(d, "card-status", status, 3000)
+    spec.assert_eq(ok, 1, "status becomes '${status}'")
+    if ok == 1 {
+        got = webdriver.element_text(d, webdriver.find(d, webdriver.By_ID(), "card-message"))
+        spec.assert_str_eq(got, msg, "message text")
+    }
+}
+
+fn expect_calls(want: int) {
+    got = harness_fixture.backend_calls("/_harness/calls")
+    spec.assert_eq(got, want, "processor called ${want} time(s)")
+}
+
+// JSON-quote a value for the fill payload.
+fn q(s: string) -> string {
+    return "\"${s}\""
+}

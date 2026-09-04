@@ -1,0 +1,229 @@
+// harness.stub.messages — the stand-in for the message store behind the
+// inbox component.
+//
+// Structurally different from harness.stub.cards on purpose. Cards is a
+// *response* stub: one call in, one programmable verdict out. This is a
+// *data* stub: the test seeds a corpus, the component queries it, and
+// the interesting assertions are about what came back and in what shape.
+//
+// Between them they cover the two kinds of slow thing a rectangle
+// usually sits on — a third-party call and a database.
+
+import std.list
+import std.map
+import std.string
+import std.json
+import std.strbuilder
+
+exports(
+    init, reset, seed,
+    query, query_count,
+    calls_json, call_count
+)
+
+// Messages are stored as std.map entries rather than a struct: the
+// corpus is heterogeneous test data seeded from JSON, and a struct named
+// `Message` is not spellable anyway (it collides with the actor-model
+// `message` keyword).
+
+// The seeded corpus, and a log of the queries the component issued.
+var messages: ptr = null
+var queries: ptr = null
+var fail_next: int = 0
+var delay_ms: int = 0
+
+init() {
+    messages = list.new()
+    queries = list.new()
+    fail_next = 0
+    delay_ms = 0
+}
+
+reset() {
+    free_all()
+    messages = list.new()
+    queries = list.new()
+    fail_next = 0
+    delay_ms = 0
+}
+
+fn free_all() {
+    if messages != null {
+        n = list.size(messages)
+        for (i = 0; i < n; i++) {
+            m, _ = list.get(messages, i)
+            if m != null { map.free(m) }
+        }
+        list.free(messages)
+        messages = null
+    }
+    if queries != null {
+        n2 = list.size(queries)
+        for (j = 0; j < n2; j++) {
+            q, _ = list.get(queries, j)
+            if q != null { map.free(q) }
+        }
+        list.free(queries)
+        queries = null
+    }
+}
+
+// Seed the corpus from JSON, plus optional behaviour flags:
+//
+//     {"messages":[{"sender":"Ana","subject":"Lunch?","unread":true}],
+//      "failNext":false, "delayMs":0}
+//
+// Returns "" on success, an error string otherwise.
+seed(body: string) -> string {
+    if body == "" { return "empty body" }
+    doc, perr = json.parse(body)
+    if perr != "" { return "bad JSON: ${perr}" }
+    defer json.json_free(doc)
+
+    if messages == null { messages = list.new() }
+
+    arr, _ = json.object_get(doc, "messages")
+    if arr != null && json.json_type(arr) == 4 {
+        n = json.json_array_size(arr)
+        for (i = 0; i < n; i++) {
+            item, _ = json.array_get(arr, i)
+            if item == null { continue }
+            e = map.new()
+            map.put(e, "sender", string.concat(jstr(item, "sender", "?"), ""))
+            map.put(e, "subject", string.concat(jstr(item, "subject", ""), ""))
+            unread = "0"
+            if jbool(item, "unread", 0) == 1 { unread = "1" }
+            map.put(e, "unread", string.concat(unread, ""))
+            list.add(messages, e)
+        }
+    }
+
+    fail_next = jbool(doc, "failNext", fail_next)
+    delay_ms = jint(doc, "delayMs", delay_ms)
+    return ""
+}
+
+// The query the component issues. `filter` is matched case-insensitively
+// against sender and subject; "" matches everything. `unread_only`
+// restricts to unread.
+//
+// Returns (matches, err): a std.list of message maps the caller must NOT
+// free (it borrows from the corpus), and an error when the stub was told
+// to fail.
+query(filter: string, unread_only: int) -> (ptr, string) {
+    record(filter, unread_only)
+
+    if delay_ms > 0 { sleep(delay_ms) }
+    if fail_next == 1 {
+        fail_next = 0
+        return (null, "message store unavailable")
+    }
+
+    out = list.new()
+    if messages == null { return (out, "") }
+
+    needle = string.to_lower(filter)
+    n = list.size(messages)
+    for (i = 0; i < n; i++) {
+        m, _ = list.get(messages, i)
+        if m == null { continue }
+
+        if unread_only == 1 {
+            u, _ = map.get(m, "unread")
+            if string.equals(u, "1") == 0 { continue }
+        }
+
+        if string.length(needle) > 0 {
+            sender, _ = map.get(m, "sender")
+            subject, _ = map.get(m, "subject")
+            hay = string.to_lower("${sender} ${subject}")
+            if string.contains(hay, needle) == 0 { continue }
+        }
+
+        list.add(out, m)
+    }
+    return (out, "")
+}
+
+query_count() -> int {
+    if messages == null { return 0 }
+    return list.size(messages)
+}
+
+fn record(filter: string, unread_only: int) {
+    if queries == null { queries = list.new() }
+    q = map.new()
+    map.put(q, "filter", string.concat(filter, ""))
+    u = "0"
+    if unread_only == 1 { u = "1" }
+    map.put(q, "unread", string.concat(u, ""))
+    list.add(queries, q)
+}
+
+call_count() -> int {
+    if queries == null { return 0 }
+    return list.size(queries)
+}
+
+// The recorded queries, for GET /_harness/calls. Lets a test assert
+// "the component asked for unread-only exactly once" — a claim the DOM
+// cannot make.
+calls_json() -> string {
+    sb = strbuilder.new(256)
+    strbuilder.append(sb, "{\"queries\":[")
+    if queries != null {
+        n = list.size(queries)
+        for (i = 0; i < n; i++) {
+            if i > 0 { strbuilder.append(sb, ",") }
+            q, _ = list.get(queries, i)
+            f, _ = map.get(q, "filter")
+            u, _ = map.get(q, "unread")
+            strbuilder.append(sb, "{\"filter\":")
+            strbuilder.append(sb, quote(f))
+            strbuilder.append(sb, ",\"unreadOnly\":")
+            if string.equals(u, "1") == 1 {
+                strbuilder.append(sb, "true")
+            } else {
+                strbuilder.append(sb, "false")
+            }
+            strbuilder.append(sb, "}")
+        }
+    }
+    strbuilder.append(sb, "],\"count\":")
+    strbuilder.append_int(sb, call_count())
+    strbuilder.append(sb, "}")
+    return strbuilder.finish(sb)
+}
+
+// --- small JSON helpers ---------------------------------------------------
+
+fn jstr(obj: ptr, key: string, fallback: string) -> string {
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != 3 { return fallback }
+    s, err = json.get_string(v)
+    if err != "" { return fallback }
+    return s
+}
+
+fn jint(obj: ptr, key: string, fallback: int) -> int {
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != 2 { return fallback }
+    return json.json_get_int(v)
+}
+
+fn jbool(obj: ptr, key: string, fallback: int) -> int {
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != 1 { return fallback }
+    return json.json_get_bool(v)
+}
+
+fn quote(s: string) -> string {
+    v = json.json_create_string(s)
+    out, err = json.stringify(v)
+    json.json_free(v)
+    if err != "" { return "\"\"" }
+    return out
+}

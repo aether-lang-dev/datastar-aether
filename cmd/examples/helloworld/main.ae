@@ -1,0 +1,105 @@
+// Datastar "hello world" — the canonical SDK demo, in Aether.
+//
+// Clicking Start calls `@get('/hello-world')`, which streams the message
+// one character at a time, pausing for however many milliseconds the
+// `delay` signal says. Each character is a `datastar-patch-elements`
+// event replacing `#message`.
+//
+// Run:  task hello    (or: ae run cmd/examples/helloworld/main.ae)
+// Then: http://localhost:1337
+//
+// The routing is contrib.tinyweb, whose trailing-block DSL lets the
+// whole server read as a description of itself rather than a sequence of
+// registration calls. Datastar's own options use the same shape, so a
+// handler that streams a configured patch nests one block inside the
+// other.
+
+import contrib.tinyweb
+import std.file
+import std.json
+import std.string
+import datastar
+
+const PORT = 1337
+const MESSAGE = "Hello, world!"
+const HTML_PATH = "cmd/examples/helloworld/hello-world.html"
+
+main() {
+    page, err = file.read(HTML_PATH)
+    if err != "" {
+        println("cannot read ${HTML_PATH}: ${err}")
+        return 1
+    }
+
+    server = tinyweb.web_server_host("localhost", PORT) {
+        tinyweb.end_point(tinyweb.GET, "/") | req: ptr, res: ptr, ctx: ptr | {
+            tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+            tinyweb.response_write(res, page)
+        }
+
+        tinyweb.end_point(tinyweb.GET, "/hello-world") | req: ptr, res: ptr, ctx: ptr | {
+            stream_message(req, res)
+        }
+    }
+
+    println("Datastar hello-world on http://localhost:${PORT}")
+    start_err = tinyweb.tw_start(server)
+    if start_err != "" {
+        println("failed to start: ${start_err}")
+        return 1
+    }
+    tinyweb.tw_stop(server)
+    return 0
+}
+
+// Stream MESSAGE one character at a time, honouring the client's `delay`
+// signal between characters.
+fn stream_message(req: ptr, res: ptr) {
+    delay = read_delay(req)
+
+    sse, err = datastar.new_sse(res)
+    if err != "" {
+        println("sse upgrade failed: ${err}")
+        return
+    }
+    defer datastar.sse_close(sse)
+
+    // The element carries its own id, so `outer` morphing finds it —
+    // but naming the selector explicitly saves the client a DOM query
+    // per character. Built once, reused for every patch in the stream.
+    opts = datastar.element_options() {
+        datastar.with_selector_id("message")
+    }
+    defer datastar.element_options_free(opts)
+
+    n = string.length(MESSAGE)
+    for (i = 0; i < n; i++) {
+        prefix = string.substring(MESSAGE, 0, i + 1)
+
+        // A write failure means the browser navigated away mid-stream,
+        // which is entirely normal — stop rather than log it.
+        werr = datastar.patch_elements(sse, "<div id=\"message\">${prefix}</div>", opts)
+        if werr != "" { return }
+
+        if delay > 0 { sleep(delay) }
+    }
+}
+
+// The `delay` signal off the request, in milliseconds. Datastar sends
+// the whole client store, so this reads one field out of it; anything
+// missing or malformed falls back to the demo's default.
+fn read_delay(req: ptr) -> int {
+    fallback = 400
+
+    signals, err = datastar.read_signals(req)
+    if err != "" || signals == null { return fallback }
+    defer json.json_free(signals)
+
+    v, _ = json.object_get(signals, "delay")
+    if v == null { return fallback }
+    if json.json_type(v) != 2 { return fallback } // 2 = JSON number
+
+    delay = json.json_get_int(v)
+    if delay < 0 { return fallback }
+    return delay
+}

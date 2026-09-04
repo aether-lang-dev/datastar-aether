@@ -1,0 +1,149 @@
+// Integration: the SSE transport actually streams.
+//
+// The conformance goldens prove the SDK produces the right BYTES. They
+// say nothing about WHEN those bytes reach the client — a server that
+// buffered every event and flushed once at the end would pass all twenty
+// goldens and still be useless for the thing Datastar exists to do.
+//
+// So: spawn a fixture that emits four patches 250ms apart, read them off
+// a raw socket, and time each arrival. If the transport buffered,
+// nothing would appear until the handler returned and the first read
+// would land at ~1000ms instead of ~0ms.
+//
+// Needs `target/tick_server` built first — `task test-streaming` does
+// that, and the test says so rather than failing cryptically.
+
+import std.spec
+import std.os
+import std.tcp
+import std.fs
+import std.mem
+import std.string
+import std.list
+
+const PORT = 7355
+const TICKS = 4
+const INTERVAL_MS = 250
+const SERVER = "target/tick_server"
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "SSE transport streams incrementally") {
+        spec.it("delivers each event as it is produced") callback {
+            check_streaming()
+        }
+    }
+
+    return spec.run_summary(fw)
+}
+
+fn check_streaming() {
+    if fs.exists(SERVER) == 0 {
+        spec.fail("fixture ${SERVER} not built — run `task build-fixtures`")
+        return
+    }
+
+    argv = list.new()
+    list.add(argv, SERVER)
+    env = list.new()
+    list.add(env, "TICK_PORT=${PORT}")
+
+    token, serr = os.spawn_proc(SERVER, argv, env)
+    if serr != "" {
+        spec.fail("cannot spawn ${SERVER}: ${serr}")
+        list.free(argv)
+        list.free(env)
+        return
+    }
+
+    // Let the listener bind before dialling it.
+    sleep(1500)
+
+    arrivals = read_tick_arrivals()
+
+    // The fixture exits once its stream ends; reap it rather than
+    // leaving a zombie behind.
+    _code, _werr = os.wait(token)
+    list.free(argv)
+    list.free(env)
+
+    n = list.size(arrivals)
+    spec.assert_eq(n, TICKS, "every tick arrived")
+
+    if n == TICKS {
+        first = arrival_at(arrivals, 0)
+        last = arrival_at(arrivals, n - 1)
+
+        // The decisive check. Under buffering every event materialises
+        // together when the handler returns, so the FIRST arrival would
+        // be around TICKS * INTERVAL_MS. Streaming puts it near zero;
+        // one interval is a wide margin either way.
+        spec.assert_true(first < INTERVAL_MS,
+            "first event arrived at ${first}ms, before the server's first ${INTERVAL_MS}ms sleep — so it was not buffered")
+
+        // And the last must NOT arrive early, or the fixture is not
+        // pacing at all and the check above proves nothing.
+        pacing = (TICKS - 1) * INTERVAL_MS
+        spec.assert_true(last >= pacing,
+            "last event arrived at ${last}ms, at or past the ${pacing}ms the fixture spends pacing")
+    }
+
+    list.free(arrivals)
+}
+
+// Dial the fixture, ask for the stream, and record how many
+// milliseconds after the request each `tick` line arrived. Returns a
+// std.list of inline-boxed millisecond counts.
+fn read_tick_arrivals() -> ptr {
+    arrivals = list.new()
+
+    sock, cerr = tcp.connect("127.0.0.1", PORT)
+    if cerr != "" { return arrivals }
+
+    tcp.write(sock, "GET /ticks HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n")
+
+    start = os.now_monotonic_ms()
+    seen = 0
+    // Bounded by reads rather than by wall time; a read error or an
+    // empty payload means the peer closed, which ends the loop too.
+    for (i = 0; i < TICKS * 8 && seen < TICKS; i++) {
+        chunk, rerr = tcp.read(sock, 4096)
+        if rerr != "" { break }
+        if string.length(chunk) == 0 { break }
+
+        elapsed = os.now_monotonic_ms() - start
+
+        // One read may carry several events (that is exactly what
+        // buffering would look like), so count every tick line in it
+        // and attribute them all to this read's arrival time.
+        found = count_occurrences(chunk, "tick ")
+        for (j = 0; j < found && seen < TICKS; j++) {
+            list.add(arrivals, mem.long_to_ptr(elapsed))
+            seen = seen + 1
+        }
+    }
+
+    tcp.close(sock)
+    return arrivals
+}
+
+fn arrival_at(l: ptr, i: int) -> int {
+    v, _ = list.get(l, i)
+    return mem.ptr_to_long(v) as int
+}
+
+fn count_occurrences(haystack: string, needle: string) -> int {
+    count = 0
+    from = 0
+    n = string.length(haystack)
+    nlen = string.length(needle)
+    for (i = 0; i < n; i++) {
+        at = string.index_of_from(haystack, needle, from)
+        if at < 0 { break }
+        count = count + 1
+        from = at + nlen
+        if from >= n { break }
+    }
+    return count
+}

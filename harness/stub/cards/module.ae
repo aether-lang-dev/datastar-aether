@@ -1,0 +1,228 @@
+// harness.stub.cards — the stand-in for the payment processor behind
+// the credit-card component.
+//
+// A real authorization is a network round trip to a third party, with a
+// sandbox account, credentials, rate limits and its own downtime. A component
+// test does not want any of that. It wants to say "the next authorize
+// call declines" and then assert on what the rectangle does about it.
+//
+// So the stub is two things:
+//
+//   - A programmable response table. A test POSTs to /_harness/backend
+//     to say how the backend should behave, then drives the UI.
+//   - A call recorder. After the fact a test can ask what the component
+//     actually requested, which is the gray-box half of the technique.
+//
+// Everything is process-local and in-memory: no database, no fixtures on
+// disk, no network. That is where the "multiple tests a second" comes
+// from — resetting between tests is clearing two maps.
+
+import std.map
+import std.list
+import std.string
+import std.json
+import std.strbuilder
+
+exports(
+    init, reset, configure,
+    authorize, AuthResult,
+    calls_json, call_count
+)
+
+// The configured behaviour for the next authorize() calls.
+struct Config {
+    outcome: string, // "approve" | "decline" | "error"
+    `message`: string, // the decline/error text the UI should surface
+    auth_code: string, // returned on approval
+    delay_ms: int // simulated latency, 0 by default — see note below
+}
+
+// What one authorize() call produced, for later assertion.
+struct AuthResult {
+    approved: int,
+    code: string,
+    `message`: string
+}
+
+// Module-level state. One harness process serves one test run at a time,
+// which is the same assumption `std.spec` makes about its framework.
+var cfg: ptr = null
+var calls: ptr = null
+
+init() {
+    cfg = heap.new(Config)
+    reset_config()
+    calls = list.new()
+}
+
+// Clear both the configured behaviour and the recorded calls. A test's
+// `before_each` calls this via POST /_harness/reset, and it is deliberately
+// cheap — the entire cost of test isolation here.
+reset() {
+    reset_config()
+    if calls != null {
+        n = list.size(calls)
+        for (i = 0; i < n; i++) {
+            c, _ = list.get(calls, i)
+            if c != null { map.free(c) }
+        }
+        list.free(calls)
+    }
+    calls = list.new()
+}
+
+fn reset_config() {
+    if cfg == null { return }
+    c = cfg as *Config
+    c.outcome = "approve"
+    c.`message` = ""
+    c.auth_code = "OK123"
+    c.delay_ms = 0
+}
+
+// Apply a JSON configuration:
+//
+//     {"outcome":"decline","message":"Insufficient funds"}
+//     {"outcome":"approve","authCode":"XYZ789"}
+//     {"outcome":"error","message":"processor timeout","delayMs":50}
+//
+// Returns "" on success, an error string otherwise. Unknown outcomes are
+// rejected rather than silently treated as approval — a typo in a test
+// fixture that made every card approve would be a nasty way to lose an
+// afternoon.
+configure(body: string) -> string {
+    if cfg == null { return "stub not initialised" }
+    if body == "" { return "empty body" }
+
+    doc, perr = json.parse(body)
+    if perr != "" { return "bad JSON: ${perr}" }
+    defer json.json_free(doc)
+
+    c = cfg as *Config
+
+    outcome = json_str(doc, "outcome", "")
+    if outcome != "" {
+        if outcome != "approve" && outcome != "decline" && outcome != "error" {
+            return "unknown outcome '${outcome}' (want approve|decline|error)"
+        }
+        c.outcome = outcome
+    }
+
+    msg = json_str(doc, "message", "")
+    if msg != "" { c.`message` = msg }
+
+    code = json_str(doc, "authCode", "")
+    if code != "" { c.auth_code = code }
+
+    c.delay_ms = json_int(doc, "delayMs", c.delay_ms)
+    return ""
+}
+
+// The call the component makes. Records the request, then answers
+// according to the current configuration.
+//
+// `delay_ms` exists so a test can deliberately exercise the pending/
+// spinner state — the one case where a component test WANTS latency. It
+// defaults to 0, because the whole point is otherwise to remove it.
+authorize(pan: string, expiry: string, amount_cents: int) -> AuthResult {
+    record(pan, expiry, amount_cents)
+
+    if cfg == null {
+        return AuthResult { approved: 0, code: "", `message`: "stub not initialised" }
+    }
+    c = cfg as *Config
+
+    if c.delay_ms > 0 { sleep(c.delay_ms) }
+
+    if c.outcome == "approve" {
+        return AuthResult { approved: 1, code: c.auth_code, `message`: "" }
+    }
+    if c.outcome == "decline" {
+        m = c.`message`
+        if m == "" { m = "Card declined" }
+        return AuthResult { approved: 0, code: "", `message`: m }
+    }
+    m = c.`message`
+    if m == "" { m = "Processor error" }
+    return AuthResult { approved: 0, code: "", `message`: m }
+}
+
+// Record a call. The PAN is masked on the way in: a harness that logged
+// full card numbers would be a bad habit to teach even with test data,
+// and the last four is what an assertion actually wants anyway.
+fn record(pan: string, expiry: string, amount_cents: int) {
+    if calls == null { calls = list.new() }
+    e = map.new()
+    map.put(e, "pan", string.concat(mask_pan(pan), ""))
+    map.put(e, "expiry", string.concat(expiry, ""))
+    map.put(e, "amount", string.concat(string.from_int(amount_cents), ""))
+    list.add(calls, e)
+}
+
+// Keep the last four digits, mask the rest.
+fn mask_pan(pan: string) -> string {
+    n = string.length(pan)
+    if n <= 4 { return pan }
+    sb = strbuilder.new(n + 1)
+    for (i = 0; i < n - 4; i++) { strbuilder.append(sb, "*") }
+    strbuilder.append(sb, string.substring(pan, n - 4, n))
+    return strbuilder.finish(sb)
+}
+
+call_count() -> int {
+    if calls == null { return 0 }
+    return list.size(calls)
+}
+
+// The recorded calls, as JSON, for GET /_harness/calls.
+calls_json() -> string {
+    sb = strbuilder.new(256)
+    strbuilder.append(sb, "{\"calls\":[")
+    if calls != null {
+        n = list.size(calls)
+        for (i = 0; i < n; i++) {
+            if i > 0 { strbuilder.append(sb, ",") }
+            e, _ = list.get(calls, i)
+            pan, _ = map.get(e, "pan")
+            exp, _ = map.get(e, "expiry")
+            amt, _ = map.get(e, "amount")
+            strbuilder.append(sb, "{\"pan\":")
+            strbuilder.append(sb, quote(pan))
+            strbuilder.append(sb, ",\"expiry\":")
+            strbuilder.append(sb, quote(exp))
+            strbuilder.append(sb, ",\"amount\":")
+            strbuilder.append(sb, amt)
+            strbuilder.append(sb, "}")
+        }
+    }
+    strbuilder.append(sb, "],\"count\":")
+    strbuilder.append_int(sb, call_count())
+    strbuilder.append(sb, "}")
+    return strbuilder.finish(sb)
+}
+
+// --- small JSON helpers ---------------------------------------------------
+
+fn json_str(obj: ptr, key: string, fallback: string) -> string {
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != 3 { return fallback } // 3 = string
+    s, err = json.get_string(v)
+    if err != "" { return fallback }
+    return s
+}
+
+fn json_int(obj: ptr, key: string, fallback: int) -> int {
+    v, _ = json.object_get(obj, key)
+    if v == null { return fallback }
+    if json.json_type(v) != 2 { return fallback } // 2 = number
+    return json.json_get_int(v)
+}
+
+fn quote(s: string) -> string {
+    v = json.json_create_string(s)
+    out, err = json.stringify(v)
+    json.json_free(v)
+    if err != "" { return "\"\"" }
+    return out
+}

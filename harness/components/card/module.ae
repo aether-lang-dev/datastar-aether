@@ -1,0 +1,195 @@
+// harness.components.card — the credit-card entry rectangle.
+//
+// One component: an HTML fragment plus the Datastar endpoints that patch
+// it. It has no knowledge of the harness — the real app would mount the
+// same fragment against a real payment processor, and only the harness
+// swaps in harness.stub.cards.
+//
+// Each rectangle gets its own module. That is the point of the layout:
+// adding a component means adding a directory, not growing a shared
+// file, and a component's markup, endpoints and helpers stay together.
+
+import contrib.tinyweb
+import std.string
+import std.json
+import datastar
+import harness.page
+import harness.stub.cards
+
+exports(mount, fragment, PATH)
+
+const PATH = "/c/card"
+
+// Mount this component's routes. Called from inside the harness's
+// web_server_host block, so tinyweb's builder context is live.
+mount(_ctx: ptr) {
+    tinyweb.end_point(_ctx, tinyweb.GET, PATH) | req: ptr, res: ptr, ctx: ptr | {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write(res, page.wrap("Credit card component", fragment()))
+    }
+
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/submit") | req: ptr, res: ptr, ctx: ptr | {
+        submit(req, res)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Component: credit-card entry
+//
+// Signals:  card.num, card.expmonth, card.expyear, card.sec
+//
+// The signal names are all-lowercase on purpose. HTML attribute names
+// are case-insensitive and the DOM lowercases them, so a `data-bind:`
+// naming a camelCase signal (`data-bind:card.expMM`) arrives as
+// `card.expmm` and silently binds nothing — the field stays empty and
+// the component reports "Expiry is required" no matter what was typed.
+// Found the hard way; two component tests caught it.
+// Endpoints: POST /c/card/submit   authorize the card
+//            POST /c/card/validate re-validate as the user types
+// ---------------------------------------------------------------------------
+
+// The component's own markup — the rectangle. Deliberately free of any
+// page chrome: no nav, no layout, no auth. Mounting it in the real app
+// means dropping this fragment into a page; mounting it here means
+// serving it alone.
+fragment() -> string {
+    return "<div id=\"card-component\" data-signals=\"{card:{num:'',expmonth:'',expyear:'',sec:''},status:'idle',message:''}\">
+  <h2>Payment details</h2>
+
+  <label for=\"card-num\">Card number</label>
+  <input id=\"card-num\" data-bind:card.num=\"\" autocomplete=\"off\">
+
+  <label for=\"card-exp-mm\">Expiry</label>
+  <input id=\"card-exp-mm\" data-bind:card.expmonth=\"\" size=\"2\" placeholder=\"MM\" autocomplete=\"off\">
+  <input id=\"card-exp-yy\" data-bind:card.expyear=\"\" size=\"4\" placeholder=\"YYYY\" autocomplete=\"off\">
+
+  <label for=\"card-sec\">Security code</label>
+  <input id=\"card-sec\" data-bind:card.sec=\"\" size=\"4\" autocomplete=\"off\">
+
+  <button id=\"card-submit\" data-on:click=\"@post('/c/card/submit')\">Pay</button>
+
+  <p id=\"card-status\" data-text=\"\$status\"></p>
+  <p id=\"card-message\" data-text=\"\$message\"></p>
+</div>"
+}
+
+// POST /c/card/submit — validate, call the backend, patch the result back.
+//
+// The whole handler is the component's real logic. The only thing the
+// harness changes is what sits behind `cards.authorize`.
+fn submit(req: ptr, res: ptr) {
+    signals, serr = datastar.read_signals(req)
+
+    num = ""
+    exp_mm = ""
+    exp_yy = ""
+    sec = ""
+    if serr == "" && signals != null {
+        card, _ = json.object_get(signals, "card")
+        if card != null {
+            num = sig_str(card, "num")
+            exp_mm = sig_str(card, "expmonth")
+            exp_yy = sig_str(card, "expyear")
+            sec = sig_str(card, "sec")
+        }
+    }
+    if signals != null { json.json_free(signals) }
+
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+
+    // Client-side-shaped validation, done server-side because that is
+    // where Datastar puts logic. Each branch is a distinct thing a
+    // component test can assert on without any backend at all.
+    verr = validate(num, exp_mm, exp_yy, sec)
+    if verr != "" {
+        _e = datastar.patch_signals(sse,
+            "{\"status\":\"invalid\",\"message\":${datastar.json_quote(verr)}}", null)
+        return
+    }
+
+    // Tell the user we are working. With a real processor this matters;
+    // with the stub at 0ms delay the test will usually never see it,
+    // which is why the stub can be told to be slow on purpose.
+    _p = datastar.patch_signals(sse, "{\"status\":\"pending\",\"message\":\"\"}", null)
+
+    result = cards.authorize(num, "${exp_mm}/${exp_yy}", 1000)
+
+    if result.approved == 1 {
+        _a = datastar.patch_signals(sse,
+            "{\"status\":\"approved\",\"message\":${datastar.json_quote("Authorized ${result.code}")}}", null)
+        return
+    }
+
+    _d = datastar.patch_signals(sse,
+        "{\"status\":\"declined\",\"message\":${datastar.json_quote(result.`message`)}}", null)
+}
+
+// Returns "" when the card details are plausible, else the reason.
+// Luhn is deliberately included: it is the kind of rule that is tedious
+// to reach through a full-stack test and trivial through a component one.
+fn validate(num: string, exp_mm: string, exp_yy: string, sec: string) -> string {
+    if string.length(num) == 0 { return "Card number is required" }
+    if digits_only(num) == 0 { return "Card number must be digits" }
+    if string.length(num) < 13 || string.length(num) > 19 {
+        return "Card number must be 13-19 digits"
+    }
+    if luhn_ok(num) == 0 { return "Card number is not valid" }
+
+    if string.length(exp_mm) == 0 || string.length(exp_yy) == 0 {
+        return "Expiry is required"
+    }
+    mm, mmerr = string.to_int(exp_mm)
+    if mmerr != "" || mm < 1 || mm > 12 { return "Expiry month must be 01-12" }
+
+    if string.length(sec) < 3 || string.length(sec) > 4 {
+        return "Security code must be 3 or 4 digits"
+    }
+    if digits_only(sec) == 0 { return "Security code must be digits" }
+    return ""
+}
+
+fn digits_only(s: string) -> int {
+    n = string.length(s)
+    if n == 0 { return 0 }
+    for (i = 0; i < n; i++) {
+        c = string.char_at(s, i)
+        if c < 48 || c > 57 { return 0 }
+    }
+    return 1
+}
+
+// Luhn checksum (ISO/IEC 7812-1): double every second digit from the
+// right, subtract 9 from anything over 9, and the total must divide by 10.
+fn luhn_ok(num: string) -> int {
+    n = string.length(num)
+    sum = 0
+    dbl = 0
+    for (i = n - 1; i >= 0; i = i - 1) {
+        d = string.char_at(num, i) - 48
+        if dbl == 1 {
+            d = d * 2
+            if d > 9 { d = d - 9 }
+        }
+        sum = sum + d
+        if dbl == 1 { dbl = 0 } else { dbl = 1 }
+    }
+    if sum - (sum / 10) * 10 == 0 { return 1 }
+    return 0
+}
+
+fn sig_str(obj: ptr, key: string) -> string {
+    v, _ = json.object_get(obj, key)
+    if v == null { return "" }
+    t = json.json_type(v)
+    if t == 3 {
+        s, err = json.get_string(v)
+        if err != "" { return "" }
+        return s
+    }
+    // A numeric signal (the user typed only digits and the client sent a
+    // number) is still a card number as far as we are concerned.
+    if t == 2 { return string.from_long(json.json_get_long(v)) }
+    return ""
+}
