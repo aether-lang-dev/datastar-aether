@@ -14,9 +14,10 @@ shadowing was fixed on the 0.630.0 line.
 
 Item 4 (streaming compression) shipped in 0.633.0, and SSE
 upgrade-in-place plus the `retry:` field shipped in 0.634.0 (#1899) —
-both asked for by this port. Neither is adopted here yet: the stdlib
-installed on this box is 0.629.0, so the new calls do not resolve for an
-ordinary `ae run`. See asks/sse-upgrade-in-place-REPLY.md for the
+both asked for by this port, and both released (v0.634.0 is tagged and
+pushed). Neither is adopted here yet for a purely local reason: the
+stdlib INSTALLED on this box is 0.629.0 and /usr/local needs root, so
+the new calls do not resolve for an ordinary `ae run`. See asks/sse-upgrade-in-place-REPLY.md for the
 wire-level verification and the migration sketch.
 
 KNOWN DEFECT, unfixed until that migration happens: SSE is

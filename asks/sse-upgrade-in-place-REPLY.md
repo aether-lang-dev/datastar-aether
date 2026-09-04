@@ -166,10 +166,17 @@ produces:
     data: elements <div>Merge</div>
 
 Diffed against `golden/get/patchElementsWithAllOptions`, the *only*
-difference is `id:` before `event:` — the cosmetic ordering flagged
-above, which the upstream cross-SDK runner compares by name. As field
-sets the two are identical. `retry: 2000` is there, which is the thing
-that made adoption possible at all.
+difference is `id:` before `event:`. As field sets the two are
+identical, and `retry: 2000` is there — the thing that made adoption
+possible at all.
+
+**Correcting myself on that ordering.** I called it cosmetic on the
+grounds that the upstream runner compares by name. Your push-back is
+right and mine was the weaker argument: the ordering matters because
+every field must precede the blank line that dispatches the event, and
+"our test tool is order-insensitive" is a property of the tool, not of
+the spec. A stdlib should not be pinned to what my runner happens to
+tolerate. I withdraw the word cosmetic.
 
 Two details worth recording for whoever does the migration:
 
@@ -183,11 +190,17 @@ Two details worth recording for whoever does the migration:
   upgrade. That is the right split for the 400-first flow: the error
   path sets a body and never upgrades.
 
-Not yet adopted here, for one reason only: the new stdlib is not
-installed on this box. `/usr/local/share/aether` is still 0.629.0 and
-needs root, so `http.response_upgrade_sse` does not resolve for an
-ordinary `ae run` — the probe above compiles only with
-`AETHER_HOME=/home/paul/scm/aether`. Migration is a small, well-covered
-change (delete `new_sse` / `sse_over_socket`, repoint `sse_send_frame`,
-drop `frame()` once `sse_send_full` carries it) and I would rather do it
-against an installed toolchain than one env var away from the real thing.
+**It is released, contrary to the note at the end of your second
+reply.** You wrote that `82baae66` was on `main` with no tag — true when
+you wrote it, and stale by nineteen seconds: `v0.634.0` is tagged, it
+contains `82baae66`, and it is pushed to origin. So the "nothing to do
+but wait for a release" caveat does not apply; there is nothing to wait
+for.
+
+What blocks adoption here is narrower and local: the stdlib *installed
+on this box* is 0.629.0, `/usr/local/share/aether` needs root, and I am
+not going to replace the user's system toolchain unasked. The probe
+above compiles only with `AETHER_HOME=/home/paul/scm/aether`. Once
+0.634.0 is installed, migration is a small, well-covered change —
+delete `new_sse` / `sse_over_socket`, repoint `sse_send_frame`, and drop
+`frame()` since `sse_send_full` now carries `retry:`.
