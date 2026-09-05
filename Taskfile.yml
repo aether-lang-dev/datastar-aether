@@ -2,11 +2,9 @@ version: "3"
 
 vars:
   VERSION: 0.1.0
-  # The Aether Selenium port is NOT hardcoded to a sibling checkout.
-  # scripts/find-selenium.sh resolves it at run time: $SELENIUM if set,
-  # then ../selenium (developing it alongside this repo), then the
-  # package cache where `ae add` installs things. Override with:
-  #   task test-component SELENIUM=/path/to/selenium
+  # The Aether Selenium port is a declared dependency in aether.toml;
+  # `ae` resolves it. To test against a local checkout instead, add a
+  # [patch] stanza there or pass --override — both announce themselves.
   DATASTAR_BRANCH: '{{.DATASTAR_BRANCH | default "repo-per-sdk"}}'
   TEST_PORT: '{{.TEST_PORT | default "7331"}}'
 
@@ -170,9 +168,10 @@ tasks:
           curl -sf -o /dev/null http://127.0.0.1:4321/ && break
           sleep 0.25
         done
-        SEL=$(sh scripts/find-selenium.sh) || exit 1
-        echo "selenium binding: $SEL"
-        LIB=tests/component:$SEL/aether:$SEL/selenium_core:$SEL/selenium_core/drivermgr
+        # No Selenium paths here: aether.toml declares the dependency and
+        # `ae` joins selaenium's own declared modules to the search path.
+        # This --lib is only for THIS repo's test-local modules.
+        LIB=tests/component
         rc=0
         for suite in tests/component/test_*.ae; do
           echo "--- $suite"

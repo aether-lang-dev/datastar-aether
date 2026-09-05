@@ -7,6 +7,14 @@ repository = "https://github.com/aether-lang-dev/datastar-aether"
 readme = "README.md"
 keywords = ["datastar", "sse", "hypermedia", "web"]
 
+# The Selenium binding for the component tests. `ae` >= 0.637.0 reads this
+# section and joins selaenium's declared modules to the module search path
+# itself, so nothing here spells its internal directories and no --lib is
+# needed. 0.2.1 is the first release carrying the [package] modules
+# declaration that makes that work.
+[dependencies]
+"github.com/aether-lang-dev/selaenium" = "0.2.1"
+
 [build]
 target = "native"
 

@@ -231,94 +231,43 @@ of its tests go red.
 
 ## Where the Selenium binding comes from
 
-The component tests need the Aether Selenium port — three directories
-from it: `aether/` (the binding), `selenium_core/` (the engine) and
-`selenium_core/drivermgr/` (driver resolution).
+One line in `aether.toml`:
 
-It is **not** hardcoded to a sibling checkout.
-[`scripts/find-selenium.sh`](scripts/find-selenium.sh) resolves it at run
-time, in this order:
-
-1. **`$SELENIUM`** — an explicit answer. A wrong one fails loudly rather
-   than silently falling through to something else.
-2. **`../selaenium`, but only with `SELAENIUM_LOCAL=1`** — a sibling
-   checkout, for the case where you are editing the binding alongside
-   this repo. Never auto-detected; see below.
-3. **`~/.aether/packages/<host>/<user>/selaenium`** — where `ae add`
-   installs packages. This is the default. Note the depth: `ae add`
-   stores by full source path, so the binding sits three levels below
-   `packages/`, not two.
-
-When none of them match, the script prints all three options and notes
-that the offline suites need none of this — rather than failing as a
-compile error about an unknown module, which is what a hardcoded path
-gives you when it is wrong.
-
-> **This whole section is scaffolding with a known end date.** Aether
-> 0.637.0 resolves `[dependencies]` onto the module search path, so the
-> intended future is one line in `aether.toml` and no resolver script at
-> all:
->
-> ```toml
-> [dependencies]
-> "github.com/aether-lang-dev/selaenium" = "0.2.1"
->
-> [patch]   # the local-development case, and it announces itself
-> "github.com/aether-lang-dev/selaenium" = "../selaenium"
-> ```
->
-> Blocked on one thing outside this repo: a package declares what it
-> exports in its own `aether.toml`, and selaenium has none at v0.2.0, so
-> it currently resolves to nothing. Written up for them with the exact
-> `modules` line, verified against their tree. When they cut a release
-> with it, `scripts/find-selenium.sh` and everything below goes away.
-
-### The two ways to get it (A: published, B: local)
-
-**A — buy it in, pinned (the reproducible default).** The port publishes
-GitHub releases, so pin one by tag:
-
-```sh
-ae add github.com/aether-lang-dev/selaenium@v0.2.0
+```toml
+[dependencies]
+"github.com/aether-lang-dev/selaenium" = "0.2.1"
 ```
 
-`ae add` is `git clone` + `git checkout <tag>`, so this lands the tree
-**at that exact tag** under `~/.aether/packages/github.com/aether-lang-dev/selaenium`,
-which is what the resolver's step 3 finds. A given tag is the same bytes
-for everyone — CI and a teammate compile identical engine source. (The
-release also carries prebuilt `libselenium_core.*` binaries; those are
-for FFI consumers that `dlopen` the engine and are irrelevant here — the
-component tests compile the `.ae` source in-graph.)
+`ae` resolves it onto the module search path — `ae lib-path` shows the
+three directories it joined — so nothing here spells selaenium's
+internal layout and the component suites need no `--lib` for it. Install
+it with `ae add github.com/aether-lang-dev/selaenium@v0.2.1`; a declared
+but missing dependency fails by name and tells you that command.
 
-**B — develop it alongside, on the same box (opt-in).** If you are
-editing the binding and want your edits under test without publishing,
-point at your working tree:
+**Editing the binding locally?** Point at your checkout, and the build
+says so rather than letting a patched run pass for a pinned one:
 
-```sh
-task test-component SELENIUM=/home/you/scm/selaenium   # by path
-SELAENIUM_LOCAL=1 task test-component                  # or take ../selaenium
+```toml
+[patch]
+"github.com/aether-lang-dev/selaenium" = "../selaenium"
 ```
 
-**A sibling checkout is never picked up automatically**, and that is a
-deliberate change from how this started.
+```sh
+ae run tests/component/test_card.ae --lib tests/component \
+  --override github.com/aether-lang-dev/selaenium=../selaenium
+```
 
-It used to be auto-detected and to win over the package. The reasoning
-was sound — someone editing the binding wants their edits under test —
-but the mechanism was not: a working copy silently overriding a pinned
-dependency is how a run goes green against engine changes committed on
-one box and never pushed, and then fails in CI, which only has the
-package.
+Either prints `Overriding github.com/aether-lang-dev/selaenium -> <path>`.
+That announcement is the point: a working copy silently overriding a
+pinned dependency is how a run goes green against engine changes
+committed on one box and never pushed, then fails in CI.
 
-It is also the same shape as the bug that left this script's package
-branch dead for its first week: a fallback quietly doing something other
-than what the caller assumed. Two mistakes (globbing two directory
-levels instead of three, and spelling the repo `selenium` rather than
-`selaenium`) meant the package was never found — and nobody noticed,
-because the sibling fallback kept every run green on the one machine
-that had both.
-
-So B is now opt-in, and every run echoes `selenium binding: <path>` so
-you can see which engine produced a result.
+This replaced a 90-line `scripts/find-selenium.sh` that globbed the
+package cache by hand — and got it wrong twice, since `ae add` stores
+three directory levels deep and the repo is spelled `selaenium`, not
+`selenium`. The fallback to a sibling checkout hid the breakage
+completely on the one machine that had both. Requires `ae` >= 0.637.0
+and selaenium >= 0.2.1, the first release declaring what it exports.
 
 ## Notes for whoever runs this next
 

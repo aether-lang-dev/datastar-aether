@@ -22,7 +22,7 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.635.0** or later, and `contrib.tinyweb` for the examples'
+Aether **0.638.0** or later, and `contrib.tinyweb` for the examples'
 routing (it ships with a standard Aether install).
 
 Four fixes and one feature this SDK depends on, all upstream:
@@ -198,9 +198,9 @@ Five layers, each covering what the others cannot:
   it because every other suite speaks plain HTTP. Reverting the
   transport makes this one fail with the original error.
 - **Component** — two components driven in a real browser, plus the
-  workbench's stories. These need the Aether Selenium port:
-  `ae add github.com/aether-lang-dev/selaenium@v0.2.0`. A local checkout
-  can be used instead, but only when asked for explicitly. See
+  workbench's stories. These need the Aether Selenium port, a declared
+  dependency in `aether.toml`:
+  `ae add github.com/aether-lang-dev/selaenium@v0.2.1`. See
   [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
 Suites are `std.spec`. A missing browser or harness **skips** locally and
