@@ -241,12 +241,13 @@ time, in this order:
 
 1. **`$SELENIUM`** — an explicit answer. A wrong one fails loudly rather
    than silently falling through to something else.
-2. **`../selenium`** — a sibling checkout, for the case where you are
-   developing the binding alongside this repo on the same machine.
+2. **`../selaenium`, but only with `SELAENIUM_LOCAL=1`** — a sibling
+   checkout, for the case where you are editing the binding alongside
+   this repo. Never auto-detected; see below.
 3. **`~/.aether/packages/<host>/<user>/selaenium`** — where `ae add`
-   installs packages, which is how most people would get it. Note the
-   depth: `ae add` stores by full source path, so the binding sits three
-   levels below `packages/`, not two.
+   installs packages. This is the default. Note the depth: `ae add`
+   stores by full source path, so the binding sits three levels below
+   `packages/`, not two.
 
 When none of them match, the script prints all three options and notes
 that the offline suites need none of this — rather than failing as a
@@ -275,23 +276,30 @@ editing the binding and want your edits under test without publishing,
 point at your working tree:
 
 ```sh
-task test-component SELENIUM=/home/you/scm/selaenium
+task test-component SELENIUM=/home/you/scm/selaenium   # by path
+SELAENIUM_LOCAL=1 task test-component                  # or take ../selaenium
 ```
 
-or keep a `../selenium` / `../selaenium` sibling checkout, which the
-resolver's step 2 picks up.
+**A sibling checkout is never picked up automatically**, and that is a
+deliberate change from how this started.
 
-**One caveat worth stating loudly.** Step 2 (sibling) is checked *before*
-step 3 (package), so if you have both, your working copy silently wins.
-That is what you want while developing the binding — but on a two-box
-workflow it is also how you get a green run against engine changes you
-have committed on one box and **not yet pushed**: the tests pass here,
-then fail in CI (which only has the pinned package). If a component run
-is green locally but you are not sure which engine it used, the run
-echoes `selenium binding: <path>` — check whether that is your sibling
-checkout or the pinned package before trusting the result. For anything
-you want reproducible, prefer A and remove the sibling from the search
-(don't keep a `../selenium` around, or set `SELENIUM=` to the package).
+It used to be auto-detected and to win over the package. The reasoning
+was sound — someone editing the binding wants their edits under test —
+but the mechanism was not: a working copy silently overriding a pinned
+dependency is how a run goes green against engine changes committed on
+one box and never pushed, and then fails in CI, which only has the
+package.
+
+It is also the same shape as the bug that left this script's package
+branch dead for its first week: a fallback quietly doing something other
+than what the caller assumed. Two mistakes (globbing two directory
+levels instead of three, and spelling the repo `selenium` rather than
+`selaenium`) meant the package was never found — and nobody noticed,
+because the sibling fallback kept every run green on the one machine
+that had both.
+
+So B is now opt-in, and every run echoes `selenium binding: <path>` so
+you can see which engine produced a result.
 
 ## Notes for whoever runs this next
 
