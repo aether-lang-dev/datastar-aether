@@ -243,16 +243,55 @@ time, in this order:
    than silently falling through to something else.
 2. **`../selenium`** — a sibling checkout, for the case where you are
    developing the binding alongside this repo on the same machine.
-3. **`~/.aether/packages/*/*/selenium`** — where `ae add` installs
-   packages, which is how most people would get it.
-
-The sibling is checked before the package deliberately: if you have
-both, your working copy is the one you meant to test against.
+3. **`~/.aether/packages/<host>/<user>/selaenium`** — where `ae add`
+   installs packages, which is how most people would get it. Note the
+   depth: `ae add` stores by full source path, so the binding sits three
+   levels below `packages/`, not two.
 
 When none of them match, the script prints all three options and notes
 that the offline suites need none of this — rather than failing as a
 compile error about an unknown module, which is what a hardcoded path
 gives you when it is wrong.
+
+### The two ways to get it (A: published, B: local)
+
+**A — buy it in, pinned (the reproducible default).** The port publishes
+GitHub releases, so pin one by tag:
+
+```sh
+ae add github.com/aether-lang-dev/selaenium@v0.2.0
+```
+
+`ae add` is `git clone` + `git checkout <tag>`, so this lands the tree
+**at that exact tag** under `~/.aether/packages/github.com/aether-lang-dev/selaenium`,
+which is what the resolver's step 3 finds. A given tag is the same bytes
+for everyone — CI and a teammate compile identical engine source. (The
+release also carries prebuilt `libselenium_core.*` binaries; those are
+for FFI consumers that `dlopen` the engine and are irrelevant here — the
+component tests compile the `.ae` source in-graph.)
+
+**B — develop it alongside, on the same box (opt-in).** If you are
+editing the binding and want your edits under test without publishing,
+point at your working tree:
+
+```sh
+task test-component SELENIUM=/home/you/scm/selaenium
+```
+
+or keep a `../selenium` / `../selaenium` sibling checkout, which the
+resolver's step 2 picks up.
+
+**One caveat worth stating loudly.** Step 2 (sibling) is checked *before*
+step 3 (package), so if you have both, your working copy silently wins.
+That is what you want while developing the binding — but on a two-box
+workflow it is also how you get a green run against engine changes you
+have committed on one box and **not yet pushed**: the tests pass here,
+then fail in CI (which only has the pinned package). If a component run
+is green locally but you are not sure which engine it used, the run
+echoes `selenium binding: <path>` — check whether that is your sibling
+checkout or the pinned package before trusting the result. For anything
+you want reproducible, prefer A and remove the sibling from the search
+(don't keep a `../selenium` around, or set `SELENIUM=` to the package).
 
 ## Notes for whoever runs this next
 
