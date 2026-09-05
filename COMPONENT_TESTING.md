@@ -254,6 +254,25 @@ that the offline suites need none of this — rather than failing as a
 compile error about an unknown module, which is what a hardcoded path
 gives you when it is wrong.
 
+> **This whole section is scaffolding with a known end date.** Aether
+> 0.637.0 resolves `[dependencies]` onto the module search path, so the
+> intended future is one line in `aether.toml` and no resolver script at
+> all:
+>
+> ```toml
+> [dependencies]
+> "github.com/aether-lang-dev/selaenium" = "0.2.1"
+>
+> [patch]   # the local-development case, and it announces itself
+> "github.com/aether-lang-dev/selaenium" = "../selaenium"
+> ```
+>
+> Blocked on one thing outside this repo: a package declares what it
+> exports in its own `aether.toml`, and selaenium has none at v0.2.0, so
+> it currently resolves to nothing. Written up for them with the exact
+> `modules` line, verified against their tree. When they cut a release
+> with it, `scripts/find-selenium.sh` and everything below goes away.
+
 ### The two ways to get it (A: published, B: local)
 
 **A — buy it in, pinned (the reproducible default).** The port publishes
