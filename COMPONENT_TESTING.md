@@ -229,6 +229,31 @@ still serves a 200 and a component — but that driving the component produces
 the promised outcome. Mutation-tested: stop applying story setup and three
 of its tests go red.
 
+## Where the Selenium binding comes from
+
+The component tests need the Aether Selenium port — three directories
+from it: `aether/` (the binding), `selenium_core/` (the engine) and
+`selenium_core/drivermgr/` (driver resolution).
+
+It is **not** hardcoded to a sibling checkout.
+[`scripts/find-selenium.sh`](scripts/find-selenium.sh) resolves it at run
+time, in this order:
+
+1. **`$SELENIUM`** — an explicit answer. A wrong one fails loudly rather
+   than silently falling through to something else.
+2. **`../selenium`** — a sibling checkout, for the case where you are
+   developing the binding alongside this repo on the same machine.
+3. **`~/.aether/packages/*/*/selenium`** — where `ae add` installs
+   packages, which is how most people would get it.
+
+The sibling is checked before the package deliberately: if you have
+both, your working copy is the one you meant to test against.
+
+When none of them match, the script prints all three options and notes
+that the offline suites need none of this — rather than failing as a
+compile error about an unknown module, which is what a hardcoded path
+gives you when it is wrong.
+
 ## Notes for whoever runs this next
 
 - **Datastar attribute syntax is colon-separated**: `data-on:click`,

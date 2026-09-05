@@ -198,7 +198,10 @@ Five layers, each covering what the others cannot:
   it because every other suite speaks plain HTTP. Reverting the
   transport makes this one fail with the original error.
 - **Component** — two components driven in a real browser, plus the
-  workbench's stories. See [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
+  workbench's stories. These need the Aether Selenium port, which is
+  found at run time (`$SELENIUM`, then a `../selenium` sibling checkout,
+  then the `ae add` package cache) rather than hardcoded. See
+  [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
 Suites are `std.spec`. A missing browser or harness **skips** locally and
 **fails** in CI — set `COMPONENT_TESTS_REQUIRED=1` there, because a skip
