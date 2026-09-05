@@ -46,10 +46,16 @@ for sibling in ../selenium ../selaenium; do
     fi
 done
 
-# 3. The package cache, where `ae add` puts things.
+# 3. The package cache, where `ae add` puts things. It stores by full source
+#    path: packages/<host>/<user>/<repo> — e.g.
+#    packages/github.com/aether-lang-dev/selaenium — so the binding sits THREE
+#    levels down, not two. Glob both depths (and *sela*/*selen* spellings) so a
+#    published `ae add github.com/aether-lang-dev/selaenium@vX` is actually found.
 cache="${AETHER_HOME:-$HOME/.aether}/packages"
 if [ -d "$cache" ]; then
-    for candidate in "$cache"/*/*/selenium "$cache"/*/*/*selenium*; do
+    for candidate in \
+        "$cache"/*/*/*sel*nium* \
+        "$cache"/*/*sel*nium* ; do
         if is_binding "$candidate"; then
             echo "$candidate"
             exit 0
