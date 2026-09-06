@@ -1,0 +1,196 @@
+// harness.components.card.preview — the live card face. A faithful port
+// of vue-paycard's card-item (MIT, © 2020 Igor Guastalla): a front with
+// the number, holder, expiry and brand; a back with the magnetic band and
+// CVV; and the flip between them. No image assets — the card face is a CSS
+// gradient and the brand is a styled text badge rather than a logo PNG.
+//
+// The split your heredoc question pointed at:
+//   styles()  — a heredoc, so the CSS is verbatim (braces, #hex, %, the
+//               real cubic-bezier flip) with no escaping.
+//   markup()  — an interpolated "..." string, because it carries live
+//               Datastar bindings (`data-text`, `data-class`) that DO need
+//               ${} at render, and reactive signal references at runtime.
+//
+// The preview OWNS no signals of its own; it reads the same card.* signals
+// the fields write. Flipping is driven by `$card.flipped`, which the cvc
+// field sets on focus — exactly vue-paycard's isCardFlipped.
+
+import std.string
+
+exports(styles, markup, fragment)
+
+// --- the CSS, verbatim via heredoc -----------------------------------------
+styles() -> string {
+    return <<CSS
+    .card-item {
+        max-width: 430px;
+        height: 270px;
+        margin: 0 auto;
+        position: relative;
+        z-index: 2;
+        font-family: "Source Code Pro", "SFMono-Regular", Menlo, monospace;
+    }
+    .card-item__side {
+        border-radius: 15px;
+        overflow: hidden;
+        box-shadow: 0 20px 60px 0 rgba(14, 42, 90, 0.55);
+        transform: perspective(2000px) rotateY(0deg);
+        transform-style: preserve-3d;
+        transition: all 0.8s cubic-bezier(0.71, 0.03, 0.56, 0.85);
+        backface-visibility: hidden;
+        height: 100%;
+        background: linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%);
+    }
+    .card-item__side.-back {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        transform: perspective(2000px) rotateY(-180deg);
+        padding: 0;
+        height: 100%;
+    }
+    .card-item.-active .card-item__side.-front {
+        transform: perspective(2000px) rotateY(180deg);
+    }
+    .card-item.-active .card-item__side.-back {
+        transform: perspective(2000px) rotateY(0deg);
+    }
+    .card-item__wrapper {
+        padding: 25px 20px;
+        position: relative;
+        z-index: 4;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+        color: #fff;
+    }
+    .card-item__top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        margin-bottom: 40px;
+    }
+    .card-item__chip {
+        width: 46px;
+        height: 34px;
+        border-radius: 6px;
+        background: linear-gradient(135deg, #ffe5a0 0%, #d4af37 100%);
+    }
+    .card-item__type {
+        min-height: 26px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-size: 15px;
+        opacity: 0.95;
+    }
+    .card-item__number {
+        font-size: 27px;
+        letter-spacing: 0.05em;
+        margin-bottom: 30px;
+        min-height: 32px;
+    }
+    .card-item__content {
+        display: flex;
+        justify-content: space-between;
+        margin-top: auto;
+    }
+    .card-item__holder {
+        opacity: 0.7;
+        font-size: 13px;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+    .card-item__name {
+        font-size: 18px;
+        line-height: 1;
+        white-space: nowrap;
+        text-transform: uppercase;
+    }
+    .card-item__dateTitle {
+        opacity: 0.7;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+    .card-item__dateItem {
+        font-size: 18px;
+    }
+    /* back */
+    .card-item__band {
+        background: rgba(0, 0, 19, 0.8);
+        width: 100%;
+        height: 44px;
+        margin-top: 30px;
+        margin-bottom: 20px;
+    }
+    .card-item__cvv {
+        padding: 0 20px;
+        text-align: right;
+        color: #fff;
+    }
+    .card-item__cvvTitle {
+        opacity: 0.7;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 5px;
+    }
+    .card-item__cvvBand {
+        background: #fff;
+        color: #1a1a1a;
+        height: 45px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-right: 12px;
+        font-size: 18px;
+        letter-spacing: 0.1em;
+    }
+    CSS
+}
+
+// --- the markup, interpolated (carries Datastar bindings) ------------------
+// Reads card.* signals the field sub-components write. `card.numdisplay`
+// holds the formatted, masked number; `card.brand` the detected slug;
+// `card.flipped` drives the class toggle. Placeholders show through when a
+// signal is empty, via `||` fallbacks in the data-text expressions.
+markup() -> string {
+    return "<div id=\"card-preview\" class=\"card-item\" data-class=\"{'-active': \$card.flipped}\">
+  <div class=\"card-item__side -front\">
+    <div class=\"card-item__wrapper\">
+      <div class=\"card-item__top\">
+        <div class=\"card-item__chip\"></div>
+        <div id=\"card-brand\" class=\"card-item__type\" data-text=\"\$card.brand\"></div>
+      </div>
+      <div id=\"card-preview-number\" class=\"card-item__number\" data-text=\"\$card.numdisplay || '#### #### #### ####'\"></div>
+      <div class=\"card-item__content\">
+        <div>
+          <div class=\"card-item__holder\">Card Holder</div>
+          <div id=\"card-preview-name\" class=\"card-item__name\" data-text=\"\$card.holder || 'FULL NAME'\"></div>
+        </div>
+        <div>
+          <div class=\"card-item__dateTitle\">Expires</div>
+          <div id=\"card-preview-date\" class=\"card-item__dateItem\" data-text=\"(\$card.expmonth || 'MM') + '/' + (\$card.expyear || 'YY')\"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class=\"card-item__side -back\">
+    <div class=\"card-item__band\"></div>
+    <div class=\"card-item__cvv\">
+      <div class=\"card-item__cvvTitle\">CVV</div>
+      <div id=\"card-preview-cvv\" class=\"card-item__cvvBand\" data-text=\"\$card.sec\"></div>
+    </div>
+  </div>
+</div>"
+}
+
+// The whole preview: its styles then its markup.
+fragment() -> string {
+    return "<style>${styles()}</style>${markup()}"
+}
