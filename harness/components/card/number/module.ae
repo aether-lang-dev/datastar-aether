@@ -1,0 +1,116 @@
+// harness.components.card.number — the card-number field's logic: strip
+// to digits, format into brand-appropriate groups as the user types, and
+// Luhn-check. Pure, so it gets fast offline tests; the browser test for
+// the number field only proves the formatting reaches the input.
+//
+// Grouping follows CardJs's per-brand masks, sourced through
+// brand.number_mask (Amex 4-6-5, Diners 4-6-4, default 4-4-4-4). Luhn is
+// ISO/IEC 7812-1, the same rule the form already applies at submit — kept
+// here too so "format as you type" and "is it valid" share one notion of
+// the digits.
+
+import std.string
+import harness.components.card.brand
+
+exports(digits, format, luhn_ok, is_complete, max_digits)
+
+// Keep only 0-9 from an arbitrary input (a user may paste spaces/dashes).
+digits(s: string) -> string {
+    out = ""
+    n = string.length(s)
+    for (i = 0; i < n; i++) {
+        c = string.char_at(s, i)
+        if c >= 48 && c <= 57 {
+            out = "${out}${string.substring(s, i, i + 1)}"
+        }
+    }
+    return out
+}
+
+// Total digits a brand's mask allows — the sum of its group sizes. Used
+// to cap input and to decide completeness. A space-separated mask like
+// "4 6 5" sums to 15 (Amex), "4 4 4 4" to 16.
+max_digits(brand_slug: string) -> int {
+    mask = brand.number_mask(brand_slug)
+    total = 0
+    grp = 0
+    n = string.length(mask)
+    for (i = 0; i < n; i++) {
+        c = string.char_at(mask, i)
+        if c >= 48 && c <= 57 {
+            grp = grp * 10 + (c - 48)
+        } else {
+            total = total + grp
+            grp = 0
+        }
+    }
+    return total + grp
+}
+
+// Format raw input into groups per the brand's mask, joined by spaces.
+// The brand is detected from the input itself, so the grouping shifts the
+// moment enough digits are typed to identify an Amex — exactly the
+// as-you-type behaviour vue-paycard shows and CardJs masks.
+format(raw: string) -> string {
+    ds = digits(raw)
+    brand_slug = brand.detect(ds)
+    cap = max_digits(brand_slug)
+    if string.length(ds) > cap { ds = string.substring(ds, 0, cap) }
+
+    mask = brand.number_mask(brand_slug)
+    out = ""
+    pos = 0
+    dn = string.length(ds)
+    // Walk the mask's group sizes, slicing that many digits into each.
+    grp = 0
+    mn = string.length(mask)
+    first = 1
+    for (i = 0; i <= mn; i++) {
+        c = -1
+        if i < mn { c = string.char_at(mask, i) }
+        if c >= 48 && c <= 57 {
+            grp = grp * 10 + (c - 48)
+        } else {
+            if grp > 0 && pos < dn {
+                end = pos + grp
+                if end > dn { end = dn }
+                piece = string.substring(ds, pos, end)
+                if first == 1 { out = piece } else { out = "${out} ${piece}" }
+                first = 0
+                pos = end
+            }
+            grp = 0
+        }
+    }
+    return out
+}
+
+// Luhn checksum (ISO/IEC 7812-1): double every second digit from the
+// right, subtract 9 from anything over 9; the total must divide by 10.
+luhn_ok(raw: string) -> int {
+    num = digits(raw)
+    n = string.length(num)
+    if n == 0 { return 0 }
+    sum = 0
+    dbl = 0
+    for (i = n - 1; i >= 0; i = i - 1) {
+        d = string.char_at(num, i) - 48
+        if dbl == 1 {
+            d = d * 2
+            if d > 9 { d = d - 9 }
+        }
+        sum = sum + d
+        if dbl == 1 { dbl = 0 } else { dbl = 1 }
+    }
+    if sum % 10 == 0 { return 1 }
+    return 0
+}
+
+// A number is "complete" when it fills its brand's mask AND passes Luhn.
+// Used to drive when the form can enable submit or move focus onward.
+is_complete(raw: string) -> int {
+    ds = digits(raw)
+    brand_slug = brand.detect(ds)
+    if string.length(ds) != max_digits(brand_slug) { return 0 }
+    return luhn_ok(ds)
+}

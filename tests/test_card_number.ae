@@ -1,0 +1,70 @@
+// Fast, offline tests for the card-number field's logic: digit
+// extraction, brand-aware formatting as you type, Luhn, completeness.
+
+import std.spec
+import std.string
+import harness.components.card.number
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "number — digit extraction") {
+        spec.it("keeps only digits") callback {
+            spec.assert_str_eq(number.digits("4242 4242-4242 4242"), "4242424242424242", "strips spaces and dashes")
+            spec.assert_str_eq(number.digits("abc123"), "123", "strips letters")
+            spec.assert_str_eq(number.digits(""), "", "empty stays empty")
+        }
+    }
+
+    spec.describe(fw, "number — formatting follows the brand's mask") {
+        spec.it("a Visa formats 4-4-4-4") callback {
+            spec.assert_str_eq(number.format("4242424242424242"), "4242 4242 4242 4242", "visa groups")
+        }
+        spec.it("an Amex formats 4-6-5") callback {
+            spec.assert_str_eq(number.format("378282246310005"), "3782 822463 10005", "amex groups")
+        }
+        spec.it("a Diners formats 4-6-4") callback {
+            spec.assert_str_eq(number.format("36227206271667"), "3622 720627 1667", "diners groups")
+        }
+        spec.it("the grouping shifts the moment a brand is identified") callback {
+            // Before "37", it's unknown → default mask; after, Amex.
+            spec.assert_str_eq(number.format("3782822"), "3782 822", "amex regrouped mid-type")
+        }
+        spec.it("input past the brand's length is truncated") callback {
+            spec.assert_str_eq(number.format("42424242424242429999"), "4242 4242 4242 4242", "capped at 16 for visa")
+        }
+        spec.it("a partial number formats what it has") callback {
+            spec.assert_str_eq(number.format("424242"), "4242 42", "partial visa")
+        }
+    }
+
+    spec.describe(fw, "number — Luhn") {
+        spec.it("accepts a valid number") callback {
+            spec.assert_eq(number.luhn_ok("4242424242424242"), 1, "test visa passes")
+            spec.assert_eq(number.luhn_ok("4242 4242 4242 4242"), 1, "formatting doesn't matter")
+        }
+        spec.it("rejects a bad checksum") callback {
+            spec.assert_eq(number.luhn_ok("4242424242424241"), 0, "off-by-one fails")
+        }
+        spec.it("an empty number is not valid") callback {
+            spec.assert_eq(number.luhn_ok(""), 0, "empty fails")
+        }
+    }
+
+    spec.describe(fw, "number — completeness (mask filled AND Luhn)") {
+        spec.it("a full valid Visa is complete") callback {
+            spec.assert_eq(number.is_complete("4242 4242 4242 4242"), 1, "16 digits + Luhn")
+        }
+        spec.it("a full Amex is complete at 15") callback {
+            spec.assert_eq(number.is_complete("378282246310005"), 1, "15 digits + Luhn")
+        }
+        spec.it("a valid-Luhn but too-short number is not complete") callback {
+            spec.assert_eq(number.is_complete("4242"), 0, "too short")
+        }
+        spec.it("a full-length but bad-Luhn number is not complete") callback {
+            spec.assert_eq(number.is_complete("4242424242424241"), 0, "full but invalid")
+        }
+    }
+
+    return spec.run_summary(fw)
+}
