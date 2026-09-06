@@ -26,6 +26,7 @@
 import contrib.tinyweb
 import std.string
 import std.list
+import std.json
 import harness.page
 import harness.stories
 import harness.components.card2
@@ -63,6 +64,34 @@ mount(_ctx: ptr) {
         }
     }
     list.free(all)
+
+    // Controls — Storybook's live knobs. One route per processor verdict.
+    // Posting to it reconfigures the card stub, so the NEXT submit against
+    // the on-screen card plays out that verdict. The story never reloads;
+    // only the pinned world behind it changes. The setup JSON lives here,
+    // server-side, so the button only carries a bare verdict name.
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/control/approve") | req: ptr, res: ptr, ctx: ptr | {
+        set_verdict(res, "{\"outcome\":\"approve\",\"authCode\":\"OK123\"}")
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/control/decline") | req: ptr, res: ptr, ctx: ptr | {
+        set_verdict(res, "{\"outcome\":\"decline\",\"message\":\"Insufficient funds\"}")
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/control/error") | req: ptr, res: ptr, ctx: ptr | {
+        set_verdict(res, "{\"outcome\":\"error\",\"message\":\"processor timeout\"}")
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/control/slow") | req: ptr, res: ptr, ctx: ptr | {
+        set_verdict(res, "{\"outcome\":\"approve\",\"authCode\":\"SLOW1\",\"delayMs\":1500}")
+    }
+}
+
+fn set_verdict(res: ptr, setup: string) {
+    cards.reset()
+    err = cards.configure(setup)
+    if err != "" {
+        tinyweb.response_write_status(res, "{\"ok\":false,\"error\":\"${err}\"}", 400)
+        return
+    }
+    tinyweb.response_json(res, "{\"ok\":true}")
 }
 
 // The story id from the request path: everything after "/storaebook/", minus a
@@ -247,9 +276,10 @@ fn framed_page(id: string, component: string, title: string, note: string, setup
       </dl>
     </div>
   </aside>
-  <main class=\"sb-canvas\" data-signals=\"{sbbg:'light',sbfull:false,sbtab:'canvas'}\">
+  <main class=\"sb-canvas\" data-signals=\"{sbbg:'light',sbfull:false,sbtab:'canvas',ctlmsg:''}\">
     <div class=\"sb-toolbar\">
       <button class=\"sb-tab\" data-on:click=\"\$sbtab='canvas'\" data-class=\"{'-on': \$sbtab=='canvas'}\">Canvas</button>
+      ${controls_tab(component)}
       <button class=\"sb-tab\" data-on:click=\"\$sbtab='docs'\" data-class=\"{'-on': \$sbtab=='docs'}\">Docs</button>
       <span class=\"sb-tb-gap\"></span>
       <span class=\"sb-tb-label\">background</span>
@@ -261,11 +291,50 @@ fn framed_page(id: string, component: string, title: string, note: string, setup
     <div class=\"sb-stage sb-bg-light\" id=\"sb-stage\" data-show=\"\$sbtab=='canvas'\" data-class=\"{'sb-bg-light': \$sbbg=='light','sb-bg-dark': \$sbbg=='dark','sb-bg-grid': \$sbbg=='grid','-full': \$sbfull}\">
 ${body}
     </div>
+    <div class=\"sb-controls\" id=\"sb-controls\" data-show=\"\$sbtab=='controls'\">
+${controls_panel(component)}
+    </div>
     <div class=\"sb-docs\" id=\"sb-docs\" data-show=\"\$sbtab=='docs'\">
 ${docs_panel(id, component, title, note, setup)}
     </div>
   </main>
 </div>")
+}
+
+// The Controls tab button — only components that HAVE live knobs get one.
+fn controls_tab(component: string) -> string {
+    if component != "card" { return "" }
+    return "<button class=\"sb-tab\" data-on:click=\"\$sbtab='controls'\" data-class=\"{'-on': \$sbtab=='controls'}\">Controls</button>"
+}
+
+// Controls — Storybook's live knobs. Each button POSTs to a verdict route;
+// the change lands on the next submit, the story staying on screen. This is
+// the card's processor verdict as a knob: flip between approve / decline /
+// error / slow without leaving the story. Then switch to Canvas, fill the
+// card and submit, and watch the new verdict play out.
+//
+// A route per verdict rather than JSON in the attribute keeps the setup out
+// of nested-escaping range — the button posts a bare path, the server owns
+// the setup JSON, and there is one place the verdict is spelled.
+fn controls_panel(component: string) -> string {
+    if component != "card" {
+        return "<div class=\"sb-ctl\"><p class=\"sb-note\">No controls for this component yet.</p></div>"
+    }
+    return "<div class=\"sb-ctl\">
+  <h2>Processor verdict</h2>
+  <p class=\"sb-note\">Change what the payment stub does on the next submit. The card stays as it is; only the world behind it moves — then fill the card on the Canvas tab and submit.</p>
+  <div class=\"sb-ctl-row\">
+    ${verdict_btn("approve", "Approve")}
+    ${verdict_btn("decline", "Decline")}
+    ${verdict_btn("error", "Error")}
+    ${verdict_btn("slow", "Slow (1.5s)")}
+  </div>
+  <p id=\"sb-ctl-status\" class=\"sb-note\" data-text=\"\$ctlmsg\"></p>
+</div>"
+}
+
+fn verdict_btn(kind: string, label: string) -> string {
+    return "<button class=\"sb-ctl-btn\" id=\"sb-ctl-${kind}\" data-on:click=\"@post('${PATH}/control/${kind}'); \$ctlmsg='processor set to: ${kind} — now fill a card and submit'\">${label}</button>"
 }
 
 // The Docs panel — Storybook's Docs tab. Built from what the story already
@@ -469,6 +538,17 @@ fn shell(title: string, story_id: string, content: string) -> string {
                  border-radius: 8px; padding: .8rem 1rem; font-size: .88rem;
                  overflow-x: auto; }
   .sb-doc ul { padding-left: 1.2rem; line-height: 1.7; }
+
+  /* Controls — Storybook's live knobs. */
+  .sb-controls { flex: 1; overflow: auto; padding: 2.5rem; }
+  .sb-ctl { max-width: 40rem; margin: 0 auto; }
+  .sb-ctl h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .09em;
+               color: var(--muted); margin: 0 0 .4rem; }
+  .sb-ctl-row { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+  .sb-ctl-btn { font: inherit; font-size: .9rem; padding: .5rem 1rem;
+                border: 1px solid var(--line); border-radius: 8px;
+                background: var(--panel); color: var(--ink); cursor: pointer; }
+  .sb-ctl-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
 
   .sb-stage { padding: 2rem; flex: 1; }
   .sb-stage > * { background: var(--panel); border: 1px solid var(--line);
