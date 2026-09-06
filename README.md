@@ -22,10 +22,12 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.638.0** or later, and `contrib.tinyweb` for the examples'
-routing (it ships with a standard Aether install).
+Aether **0.643.0** or later for the component tests (the SDK's core
+builds on much older), and `contrib.tinyweb` for the examples' routing
+(it ships with a standard Aether install).
 
-Four fixes and one feature this SDK depends on, all upstream:
+Fixes and features this SDK depends on, all upstream — several fixed at
+this port's request:
 
 | version | what it fixed for us |
 |---|---|
@@ -34,6 +36,8 @@ Four fixes and one feature this SDK depends on, all upstream:
 | [0.631.0](https://github.com/aether-lang-dev/aether/pull/1888) | a value-returning builder running its body twice — for a send verb, every event went out twice |
 | [0.634.0](https://github.com/aether-lang-dev/aether/pull/1899) | SSE upgrade-in-place and the `retry:` field, which together let this SDK serve HTTPS |
 | [0.635.0](https://github.com/aether-lang-dev/aether/pull/1900) | `tinyweb.with_tls`, which made that HTTPS path testable in-tree |
+| [0.637.0](https://github.com/aether-lang-dev/aether/pull/1904) | `[dependencies]` resolution — the selaenium binding is now one line in `aether.toml`, no hand-rolled `--lib` resolver |
+| [0.643.0](https://github.com/aether-lang-dev/aether/pull/1919) | a struct-prefix-punning codegen bug (a string-field write clobbered an adjacent int in a wider struct) that hit datastar's own option structs |
 
 The SDK's core builds on older toolchains; the `*_with` verbs and the
 component tests do not.
@@ -146,30 +150,67 @@ task hello        # http://localhost:1337
 task hotreload    # http://localhost:9001
 ```
 
-## The component workbench
+## Module map
+
+Three layers, each depending only downward. The SDK depends on nothing in
+the repo; everything else consumes it.
+
+```
+datastar/                       THE SDK — ported from datastar-go, std-only deps
+  module.ae                       new_sse, patch_signals/elements, option bags
+  testevents/module.ae            the conformance event model
+
+harness/                        THE EXAMPLE APP + its test infrastructure
+  components/
+    card/                         the card, DECOMPOSED into pure, offline-tested parts:
+      brand/  number/  expiry/  cvc/  preview/
+    card2/module.ae               the composition — mounts those, wires Datastar
+    inbox/module.ae               a second example component
+    module.ae                     the component registry
+  stub/                           mock collaborators (where the test speed comes from):
+    cards/    processor verdict    clock/  "now"    messages/  inbox corpus
+  storaebook/module.ae            Datastar StoraeBook (see below)
+  stories/module.ae               the story catalogue (data)
+  page/module.ae                  the plain page shell (raw view)
+
+cmd/                            ENTRY POINTS
+  harness/main.ae                 the harness AND StoraeBook server (task harness / storaebook)
+  testserver/main.ae              SDK conformance server        [[bin]] datastar-testserver
+  examples/helloworld, hotreload                                [[bin]] datastar-{helloworld,hotreload}
+```
+
+The card is the decomposition showcase: every rule (brand from PAN, Luhn,
+expiry-not-past against an injected clock, CVC length) is a pure module
+with fast offline tests; `card2` only composes them and glues them to
+Datastar, so the browser tests prove integration, not the rules.
+
+## Datastar StoraeBook
+
+A Storybook-alike for the components — a small homage to
+[Storybook](https://storybook.js.org) (portions © 2024 Storybook, MIT),
+rebuilt as idiomatic Datastar: story tree, canvas toolbar, Canvas/Docs
+tabs, and live Controls, all via signals — no JS framework.
 
 ```sh
-task harness      # http://127.0.0.1:4321/w
+task storaebook   # leaves the gallery up, browser open, for human exploration
+task harness      # the same server, for headed poking
 ```
 
 A component served alone shows one state: whatever it looks like on
 load. The states worth reviewing are the others — the decline, the empty
-result, the slow backend, the store that failed.
-
-A **story** names one of those and makes it a URL. Opening it resets the
-harness, applies the story's setup, and serves the component:
+result, the slow backend. A **story** names one and makes it a URL:
 
 | | |
 |---|---|
-| `/w` | every component, every story, with a note on why each is worth having |
-| `/w/card/declined` | one story, framed: notes, metadata, sibling states |
-| `/w/card/declined/raw` | the same story with no workbench chrome — what tests drive and screencasts record |
+| `/storaebook` | the gallery: every component, every story, in a tree with notes |
+| `/storaebook/card/declined` | one story, framed: tree, Docs tab, live Controls |
+| `/storaebook/card/declined/raw` | the same story bare — what tests drive and screencasts record |
 
 Adding a story is one row in
-[`harness/stories/module.ae`](harness/stories/module.ae). The setup is
+[`harness/stories/module.ae`](harness/stories/module.ae). Its setup is
 posted to the same `/_harness/*` endpoints a test uses, so a story and a
-test configure the world identically — if stories had a private path
-they would stop being evidence about the real thing.
+test configure the world identically — if stories had a private path they
+would stop being evidence about the real thing.
 
 Full rationale in [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
@@ -197,10 +238,10 @@ Five layers, each covering what the others cannot:
   could not serve HTTPS at all until Aether 0.634.0, and nothing caught
   it because every other suite speaks plain HTTP. Reverting the
   transport makes this one fail with the original error.
-- **Component** — two components driven in a real browser, plus the
-  workbench's stories. These need the Aether Selenium port, a declared
+- **Component** — the card and inbox driven in a real browser, plus the
+  StoraeBook's stories. These need the Aether Selenium port, a declared
   dependency in `aether.toml`:
-  `ae add github.com/aether-lang-dev/selaenium@v0.2.1`. See
+  `ae add github.com/aether-lang-dev/selaenium@v0.5.0`. See
   [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
 Suites are `std.spec`. A missing browser or harness **skips** locally and
