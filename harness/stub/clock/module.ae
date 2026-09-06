@@ -1,0 +1,50 @@
+// harness.stub.clock — the stand-in for "now" behind the card's expiry
+// check. The real thing is the system date, which makes "the card is
+// expired" a moving target: a story that passes today fails next month.
+//
+// So the clock is programmable the way the processor stub is. A test POSTs
+// to /_harness/clock to pin the current (year, month), then drives the UI
+// and asserts that an expiry in the past is rejected — deterministically,
+// forever. Defaults to a fixed month so a test that forgets to set it is
+// still stable rather than dependent on the wall clock.
+//
+// Process-local, in-memory: resetting is two integer writes.
+
+import std.json
+
+exports(init, reset, configure, now_year, now_month)
+
+// A fixed default "today": June 2026. Chosen so the sample cards used in
+// the tests (exp 2031) are comfortably in the future.
+const DEFAULT_YEAR = 2026
+const DEFAULT_MONTH = 6
+
+var cur_year: int = DEFAULT_YEAR
+var cur_month: int = DEFAULT_MONTH
+
+init() {
+    reset()
+}
+
+reset() {
+    cur_year = DEFAULT_YEAR
+    cur_month = DEFAULT_MONTH
+}
+
+now_year() -> int { return cur_year }
+now_month() -> int { return cur_month }
+
+// Pin the clock. Body is {"year": 2026, "month": 6}. Missing keys keep
+// the current value. Returns "" on success, else the reason.
+configure(body: string) -> string {
+    if body == "" { return "empty body" }
+    doc, perr = json.parse(body)
+    if perr != "" { return "bad JSON: ${perr}" }
+    defer json.json_free(doc)
+
+    y, _ = json.object_get(doc, "year")
+    if y != null && json.json_type(y) == 3 { cur_year = json.json_get_int(y) }
+    m, _ = json.object_get(doc, "month")
+    if m != null && json.json_type(m) == 3 { cur_month = json.json_get_int(m) }
+    return ""
+}

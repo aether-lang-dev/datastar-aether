@@ -1,0 +1,254 @@
+// harness.components.card2 — the composed credit-card component: the live
+// vue-paycard preview above a set of input fields, with real behaviour
+// wired through Datastar. The "2" is temporary: it stands alongside the
+// original `card` (whose 9 tests must stay green) until this replaces it.
+//
+// Decomposition: every rule lives in a pure sub-module already unit-tested
+// offline (brand, number, expiry, cvc, preview). This component is the
+// COMPOSITION — the fragment, the signals, and the endpoints that glue the
+// pure logic to Datastar. So the browser tests here prove integration (the
+// brand reaches the preview, the flip happens, submit declines an expired
+// card), not the rules themselves.
+//
+// Signals (all lowercase — the DOM lowercases attribute names, a lesson
+// the original card documents):
+//   card.num        raw number input
+//   card.numdisplay formatted, masked number (drives the preview)
+//   card.brand      detected brand slug (drives the preview badge + cvc len)
+//   card.expmonth   card.expyear   card.sec   card.holder
+//   card.flipped    1 while the CVV field is focused (flips the preview)
+//   status  message the outcome line, as in the original
+//
+// Endpoints:
+//   GET  /c/card2          the component alone
+//   POST /c/card2/format   as-you-type: reformat the number, detect brand
+//   POST /c/card2/flip     flip to the back (CVV focus) / front (blur)
+//   POST /c/card2/submit   full per-field validation, then the processor
+
+import contrib.tinyweb
+import std.string
+import std.json
+import datastar
+import harness.page
+import harness.stub.cards
+import harness.stub.clock
+import harness.components.card.brand
+import harness.components.card.number
+import harness.components.card.expiry
+import harness.components.card.cvc
+import harness.components.card.preview
+
+exports(mount, fragment, PATH)
+
+const PATH = "/c/card2"
+
+mount(_ctx: ptr) {
+    tinyweb.end_point(_ctx, tinyweb.GET, PATH) | req: ptr, res: ptr, ctx: ptr | {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write(res, page.wrap("Credit card", fragment()))
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/format") | req: ptr, res: ptr, ctx: ptr | {
+        format_ep(req, res)
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/flip") | req: ptr, res: ptr, ctx: ptr | {
+        flip_ep(req, res)
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/submit") | req: ptr, res: ptr, ctx: ptr | {
+        submit(req, res)
+    }
+}
+
+// The component's markup: the preview, then the form fields. Static styles
+// (form layout) come as a heredoc; the preview brings its own. The fields
+// post to /format on input so the preview updates as the user types.
+fragment() -> string {
+    return "<div id=\"card2-component\" data-signals=\"{card:{num:'',numdisplay:'',brand:'',expmonth:'',expyear:'',sec:'',holder:'',flipped:false},status:'idle',message:''}\">
+  ${form_styles()}
+  ${preview.fragment()}
+  <div class=\"card2-form\">
+    <label for=\"card2-name\">Card holder</label>
+    <input id=\"card2-name\" data-bind:card.holder=\"\" autocomplete=\"off\">
+
+    <label for=\"card2-num\">Card number</label>
+    <input id=\"card2-num\" data-bind:card.num=\"\" data-on:input=\"@post('${PATH}/format')\" inputmode=\"numeric\" autocomplete=\"off\">
+
+    <div class=\"card2-row\">
+      <div>
+        <label for=\"card2-exp-mm\">Expiry</label>
+        <input id=\"card2-exp-mm\" data-bind:card.expmonth=\"\" size=\"2\" placeholder=\"MM\" inputmode=\"numeric\" autocomplete=\"off\">
+        <input id=\"card2-exp-yy\" data-bind:card.expyear=\"\" size=\"4\" placeholder=\"YY\" inputmode=\"numeric\" autocomplete=\"off\">
+      </div>
+      <div>
+        <label for=\"card2-sec\">CVV</label>
+        <input id=\"card2-sec\" data-bind:card.sec=\"\" size=\"4\" inputmode=\"numeric\" autocomplete=\"off\" data-on:focus=\"@post('${PATH}/flip')\" data-on:blur=\"@post('${PATH}/flip')\">
+      </div>
+    </div>
+
+    <button id=\"card2-submit\" data-on:click=\"@post('${PATH}/submit')\">Pay</button>
+    <p id=\"card2-status\" data-text=\"\$status\"></p>
+    <p id=\"card2-message\" data-text=\"\$message\"></p>
+  </div>
+</div>"
+}
+
+fn form_styles() -> string {
+    return "<style>${form_css()}</style>"
+}
+
+fn form_css() -> string {
+    return <<CSS
+    .card2-form {
+        max-width: 430px;
+        margin: 24px auto 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-family: system-ui, sans-serif;
+    }
+    .card2-form label {
+        font-size: 13px;
+        color: #33475b;
+        margin-top: 8px;
+    }
+    .card2-form input {
+        padding: 9px 11px;
+        border: 1px solid #c3ccd6;
+        border-radius: 7px;
+        font-size: 15px;
+    }
+    .card2-form input:focus {
+        outline: none;
+        border-color: #1e3a5f;
+        box-shadow: 0 0 0 3px rgba(30, 58, 95, 0.15);
+    }
+    .card2-row {
+        display: flex;
+        gap: 16px;
+    }
+    #card2-submit {
+        margin-top: 16px;
+        padding: 11px;
+        border: 0;
+        border-radius: 7px;
+        background: #1e3a5f;
+        color: #fff;
+        font-size: 15px;
+        cursor: pointer;
+    }
+    #card2-status { font-weight: 600; margin: 12px 0 0; }
+    #card2-message { color: #b23; margin: 2px 0 0; }
+    CSS
+}
+
+// --- endpoints -------------------------------------------------------------
+
+// Pull card.<key> as a string, "" if absent.
+fn card_str(signals: ptr, key: string) -> string {
+    if signals == null { return "" }
+    card, _ = json.object_get(signals, "card")
+    if card == null { return "" }
+    v, _ = json.object_get(card, key)
+    if v == null { return "" }
+    // JSON type enum: bool=1, int=2, string=3.
+    if json.json_type(v) == 3 {
+        s, err = json.get_string(v)
+        if err != "" { return "" }
+        return s
+    }
+    return ""
+}
+
+// POST /format — the number changed; reformat it, detect the brand, and
+// patch numdisplay + brand back so the preview updates as the user types.
+fn format_ep(req: ptr, res: ptr) {
+    signals, serr = datastar.read_signals(req)
+    raw = ""
+    if serr == "" { raw = card_str(signals, "num") }
+    if signals != null { json.json_free(signals) }
+
+    display = number.format(raw)
+    brand_slug = brand.detect(number.digits(raw))
+
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+    _e = datastar.patch_signals(sse,
+        "{\"card\":{\"numdisplay\":${datastar.json_quote(display)},\"brand\":${datastar.json_quote(brand_slug)}}}", null)
+}
+
+// POST /flip — toggle the preview to its back while the CVV field is
+// focused. Focus sends flipped=true, blur sends flipped=false; we read the
+// current value and invert intent by which event fired isn't available, so
+// we flip based on whether sec has focus is not knowable server-side —
+// instead each call toggles. Simpler and matches the visual intent: focus
+// flips to back, blur flips to front.
+fn flip_ep(req: ptr, res: ptr) {
+    signals, serr = datastar.read_signals(req)
+    flipped = "false"
+    if serr == "" && signals != null {
+        card, _ = json.object_get(signals, "card")
+        if card != null {
+            v, _ = json.object_get(card, "flipped")
+            if v != null && json.json_type(v) == 1 {
+                // toggle (bool=1)
+                if json.json_get_bool(v) == 1 { flipped = "false" } else { flipped = "true" }
+            } else { flipped = "true" }
+        }
+    }
+    if signals != null { json.json_free(signals) }
+
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+    _e = datastar.patch_signals(sse, "{\"card\":{\"flipped\":${flipped}}}", null)
+}
+
+// POST /submit — full validation using the pure sub-modules, then the
+// processor. Each branch is a distinct thing a browser test asserts on
+// without a real backend.
+fn submit(req: ptr, res: ptr) {
+    signals, serr = datastar.read_signals(req)
+    num = "" expmm = "" expyy = "" sec = ""
+    if serr == "" {
+        num = card_str(signals, "num")
+        expmm = card_str(signals, "expmonth")
+        expyy = card_str(signals, "expyear")
+        sec = card_str(signals, "sec")
+    }
+    if signals != null { json.json_free(signals) }
+
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+
+    brand_slug = brand.detect(number.digits(num))
+
+    // Number
+    if number.is_complete(num) == 0 {
+        _e = patch_invalid(sse, "Card number is not valid")
+        return
+    }
+    // Expiry — the clock is a mock collaborator, pinned by the harness.
+    ny = clock.now_year()
+    nm = clock.now_month()
+    everr = expiry.validate(expmm, expyy, ny, nm)
+    if everr != "" { _e = patch_invalid(sse, everr); return }
+    // CVV — length depends on the detected brand.
+    cverr = cvc.validate(sec, brand_slug)
+    if cverr != "" { _e = patch_invalid(sse, cverr); return }
+
+    _p = datastar.patch_signals(sse, "{\"status\":\"pending\",\"message\":\"\"}", null)
+    result = cards.authorize(num, "${expmm}/${expyy}", 1000)
+    if result.approved == 1 {
+        _a = datastar.patch_signals(sse,
+            "{\"status\":\"approved\",\"message\":${datastar.json_quote("Authorized ${result.code}")}}", null)
+        return
+    }
+    _d = datastar.patch_signals(sse,
+        "{\"status\":\"declined\",\"message\":${datastar.json_quote(result.`message`)}}", null)
+}
+
+fn patch_invalid(sse: ptr, msg: string) -> string {
+    return datastar.patch_signals(sse,
+        "{\"status\":\"invalid\",\"message\":${datastar.json_quote(msg)}}", null)
+}

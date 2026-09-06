@@ -54,6 +54,7 @@ import harness.workbench
 import harness.stories
 import harness.stub.cards
 import harness.stub.messages
+import harness.stub.clock
 
 const DEFAULT_PORT = 4321
 
@@ -67,6 +68,7 @@ main() {
 
     cards.init()
     messages.init()
+    clock.init()
 
     server = tinyweb.web_server_host("127.0.0.1", port) {
         // --- the harness's own surface ------------------------------------
@@ -82,6 +84,18 @@ main() {
         tinyweb.end_point(tinyweb.POST, "/_harness/backend") | req: ptr, res: ptr, ctx: ptr | {
             body = tinyweb.request_get_body(req)
             err = cards.configure(body)
+            if err != "" {
+                tinyweb.response_write_status(res, "{\"ok\":false,\"error\":\"${err}\"}", 400)
+                return
+            }
+            tinyweb.response_json(res, "{\"ok\":true}")
+        }
+
+        // Pin "now" for the expiry check — the clock is a mock collaborator
+        // so an expired-card story is deterministic. Body: {"year","month"}.
+        tinyweb.end_point(tinyweb.POST, "/_harness/clock") | req: ptr, res: ptr, ctx: ptr | {
+            body = tinyweb.request_get_body(req)
+            err = clock.configure(body)
             if err != "" {
                 tinyweb.response_write_status(res, "{\"ok\":false,\"error\":\"${err}\"}", 400)
                 return
@@ -118,6 +132,7 @@ main() {
             // know which components exist.
             cards.reset()
             messages.reset()
+            clock.reset()
             tinyweb.response_json(res, "{\"ok\":true}")
         }
 
