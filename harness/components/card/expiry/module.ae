@@ -1,0 +1,68 @@
+// harness.components.card.expiry — the expiry field's logic: MM/YY mask,
+// month-range and not-in-the-past validation. Pure, with the current date
+// PASSED IN rather than read from a clock, so "the card is expired" is a
+// deterministic unit test instead of something that depends on today.
+//
+// That injected clock is the mock collaborator the browser test wires up:
+// the harness can pin "now" to a fixed month so an expired-card story is
+// stable forever, the way the processor stub pins approvals.
+//
+// CardJs's expiry mask is "MM / YY"; we keep MM and YY as separate fields
+// (the existing form does), so this module validates the pair.
+
+import std.string
+
+exports(validate, is_expired, VALID, ERR_REQUIRED, ERR_MONTH, ERR_EXPIRED)
+
+VALID() -> string { return "" }
+ERR_REQUIRED() -> string { return "Expiry is required" }
+ERR_MONTH() -> string { return "Expiry month must be 01-12" }
+ERR_EXPIRED() -> string { return "Card has expired" }
+
+fn digits_only(s: string) -> int {
+    n = string.length(s)
+    if n == 0 { return 0 }
+    for (i = 0; i < n; i++) {
+        c = string.char_at(s, i)
+        if c < 48 || c > 57 { return 0 }
+    }
+    return 1
+}
+
+// Normalise a 2- or 4-digit year to a full year. "31" -> 2031, "2031" ->
+// 2031. Two-digit years are read as 2000-2099, which is the convention a
+// card's printed YY implies.
+fn full_year(yy: string) -> int {
+    y, err = string.to_int(yy)
+    if err != "" { return -1 }
+    if string.length(yy) <= 2 { return 2000 + y }
+    return y
+}
+
+// Is (exp_mm, exp_yy) in the past relative to (now_year, now_month)?
+// A card is valid THROUGH its expiry month, so it expires at the end of
+// that month — equal month/year is still valid.
+is_expired(exp_mm: string, exp_yy: string, now_year: int, now_month: int) -> int {
+    mm, mmerr = string.to_int(exp_mm)
+    yy = full_year(exp_yy)
+    if mmerr != "" || yy < 0 { return 0 }
+    if yy < now_year { return 1 }
+    if yy == now_year && mm < now_month { return 1 }
+    return 0
+}
+
+// Full validation. Returns "" when the pair is a plausible, unexpired
+// date, else the reason. `now_year`/`now_month` are the injected clock.
+validate(exp_mm: string, exp_yy: string, now_year: int, now_month: int) -> string {
+    if string.length(exp_mm) == 0 || string.length(exp_yy) == 0 {
+        return ERR_REQUIRED()
+    }
+    if digits_only(exp_mm) == 0 || digits_only(exp_yy) == 0 {
+        return ERR_MONTH()
+    }
+    mm, mmerr = string.to_int(exp_mm)
+    if mmerr != "" || mm < 1 || mm > 12 { return ERR_MONTH() }
+
+    if is_expired(exp_mm, exp_yy, now_year, now_month) == 1 { return ERR_EXPIRED() }
+    return VALID()
+}

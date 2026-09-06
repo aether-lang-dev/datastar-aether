@@ -1,0 +1,38 @@
+// Fast, offline tests for the security-code field. Length tracks the
+// brand: Amex wants 4, everyone else 3.
+
+import std.spec
+import std.string
+import harness.components.card.cvc
+import harness.components.card.brand
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "cvc — length tracks the brand") {
+        spec.it("a 3-digit code is valid for Visa") callback {
+            spec.assert_str_eq(cvc.validate("123", brand.VISA()), cvc.VALID(), "visa 3 ok")
+        }
+        spec.it("Visa rejects a 4-digit code") callback {
+            spec.assert_str_eq(cvc.validate("1234", brand.VISA()), cvc.ERR_LENGTH(3), "visa wants 3")
+        }
+        spec.it("Amex requires 4") callback {
+            spec.assert_str_eq(cvc.validate("1234", brand.AMEX()), cvc.VALID(), "amex 4 ok")
+            spec.assert_str_eq(cvc.validate("123", brand.AMEX()), cvc.ERR_LENGTH(4), "amex rejects 3")
+        }
+        spec.it("an unknown brand defaults to 3") callback {
+            spec.assert_str_eq(cvc.validate("123", brand.UNKNOWN()), cvc.VALID(), "unknown 3 ok")
+        }
+    }
+
+    spec.describe(fw, "cvc — required and digits") {
+        spec.it("empty is required") callback {
+            spec.assert_str_eq(cvc.validate("", brand.VISA()), cvc.ERR_REQUIRED(), "empty")
+        }
+        spec.it("letters are rejected") callback {
+            spec.assert_str_eq(cvc.validate("12a", brand.VISA()), cvc.ERR_DIGITS(), "non-digit")
+        }
+    }
+
+    return spec.run_summary(fw)
+}

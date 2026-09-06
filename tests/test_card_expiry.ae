@@ -1,0 +1,58 @@
+// Fast, offline tests for the expiry field. The current date is injected
+// (now_year, now_month), so "expired" is deterministic — no dependency on
+// when the suite runs. This injected clock is exactly the mock the
+// expired-card browser story will pin.
+
+import std.spec
+import std.string
+import harness.components.card.expiry
+
+// A fixed "today" for the tests: June 2026.
+NOW_Y() -> int { return 2026 }
+NOW_M() -> int { return 6 }
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "expiry — required and range") {
+        spec.it("both parts required") callback {
+            spec.assert_str_eq(expiry.validate("", "31", NOW_Y(), NOW_M()), expiry.ERR_REQUIRED(), "no month")
+            spec.assert_str_eq(expiry.validate("11", "", NOW_Y(), NOW_M()), expiry.ERR_REQUIRED(), "no year")
+        }
+        spec.it("month must be 01-12") callback {
+            spec.assert_str_eq(expiry.validate("13", "31", NOW_Y(), NOW_M()), expiry.ERR_MONTH(), "month 13")
+            spec.assert_str_eq(expiry.validate("00", "31", NOW_Y(), NOW_M()), expiry.ERR_MONTH(), "month 00")
+            spec.assert_str_eq(expiry.validate("ab", "31", NOW_Y(), NOW_M()), expiry.ERR_MONTH(), "non-numeric")
+        }
+    }
+
+    spec.describe(fw, "expiry — not in the past (injected clock)") {
+        spec.it("a future year is fine") callback {
+            spec.assert_str_eq(expiry.validate("11", "2031", NOW_Y(), NOW_M()), expiry.VALID(), "2031 ok")
+            spec.assert_str_eq(expiry.validate("11", "31", NOW_Y(), NOW_M()), expiry.VALID(), "2-digit 31 ok")
+        }
+        spec.it("a past year is expired") callback {
+            spec.assert_str_eq(expiry.validate("11", "2020", NOW_Y(), NOW_M()), expiry.ERR_EXPIRED(), "2020 expired")
+        }
+        spec.it("the current month is still valid (expires end of month)") callback {
+            spec.assert_str_eq(expiry.validate("06", "2026", NOW_Y(), NOW_M()), expiry.VALID(), "this month ok")
+        }
+        spec.it("an earlier month this year is expired") callback {
+            spec.assert_str_eq(expiry.validate("05", "2026", NOW_Y(), NOW_M()), expiry.ERR_EXPIRED(), "last month expired")
+        }
+        spec.it("a later month this year is fine") callback {
+            spec.assert_str_eq(expiry.validate("12", "2026", NOW_Y(), NOW_M()), expiry.VALID(), "december ok")
+        }
+    }
+
+    spec.describe(fw, "expiry — is_expired directly") {
+        spec.it("equal month/year is NOT expired") callback {
+            spec.assert_eq(expiry.is_expired("06", "2026", NOW_Y(), NOW_M()), 0, "boundary")
+        }
+        spec.it("one month before is expired") callback {
+            spec.assert_eq(expiry.is_expired("05", "2026", NOW_Y(), NOW_M()), 1, "just past")
+        }
+    }
+
+    return spec.run_summary(fw)
+}

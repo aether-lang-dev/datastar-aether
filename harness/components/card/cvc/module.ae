@@ -1,0 +1,38 @@
+// harness.components.card.cvc — the security-code field: digits only, and
+// a length that depends on the brand (Amex 4, everyone else 3, via
+// brand.cvc_length). Pure, so it unit-tests fast; the browser test only
+// needs to prove the required length tracks the brand and that entering
+// the CVC flips the preview to its back.
+
+import std.string
+import harness.components.card.brand
+
+exports(validate, VALID, ERR_REQUIRED, ERR_DIGITS, ERR_LENGTH)
+
+VALID() -> string { return "" }
+ERR_REQUIRED() -> string { return "Security code is required" }
+ERR_DIGITS() -> string { return "Security code must be digits" }
+
+// The length error names the number it wants, since it varies by brand.
+ERR_LENGTH(want: int) -> string { return "Security code must be ${string.from_long(want)} digits" }
+
+fn digits_only(s: string) -> int {
+    n = string.length(s)
+    if n == 0 { return 0 }
+    for (i = 0; i < n; i++) {
+        c = string.char_at(s, i)
+        if c < 48 || c > 57 { return 0 }
+    }
+    return 1
+}
+
+// Validate the code against the brand's required length. `brand_slug` is
+// what the number field detected, so an empty code on an Amex asks for 4
+// and on a Visa for 3.
+validate(code: string, brand_slug: string) -> string {
+    want = brand.cvc_length(brand_slug)
+    if string.length(code) == 0 { return ERR_REQUIRED() }
+    if digits_only(code) == 0 { return ERR_DIGITS() }
+    if string.length(code) != want { return ERR_LENGTH(want) }
+    return VALID()
+}
