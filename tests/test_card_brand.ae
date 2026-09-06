@@ -1,0 +1,78 @@
+// Fast, offline unit tests for card brand detection — no browser, no
+// harness. Pure logic ported from vue-paycard's cardType rules, so this
+// is where the ruleset is pinned; the browser tests only need to prove
+// the brand reaches the preview, not re-check every prefix.
+
+import std.spec
+import std.string
+import harness.components.card.brand
+
+fn expect_brand(fw: ptr, pan: string, want: string) {
+    got = brand.detect(pan)
+    spec.assert_str_eq(got, want, "detect(${pan})")
+}
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "brand — the major networks") {
+        spec.it("Visa starts with 4") callback {
+            expect_brand(fw, "4242424242424242", brand.VISA())
+            expect_brand(fw, "4000056655665556", brand.VISA())
+        }
+        spec.it("Amex is 34 or 37") callback {
+            expect_brand(fw, "378282246310005", brand.AMEX())
+            expect_brand(fw, "341111111111111", brand.AMEX())
+        }
+        spec.it("Mastercard is 51-55") callback {
+            expect_brand(fw, "5555555555554444", brand.MASTERCARD())
+            expect_brand(fw, "5105105105105100", brand.MASTERCARD())
+        }
+        spec.it("Mastercard also 2221-2720") callback {
+            expect_brand(fw, "2223003122003222", brand.MASTERCARD())
+        }
+        spec.it("Discover is 6011 or 65") callback {
+            expect_brand(fw, "6011111111111117", brand.DISCOVER())
+            expect_brand(fw, "6511111111111119", brand.DISCOVER())
+        }
+        spec.it("Diners Club is 36 / 38 / 300-305") callback {
+            expect_brand(fw, "36227206271667", brand.DINERS())
+            expect_brand(fw, "30569309025904", brand.DINERS())
+        }
+        spec.it("JCB is 3528-3589 or 2131/1800") callback {
+            expect_brand(fw, "3530111333300000", brand.JCB())
+            expect_brand(fw, "2131111111111111", brand.JCB())
+        }
+        spec.it("UnionPay is 62") callback {
+            expect_brand(fw, "6212345678901232", brand.UNIONPAY())
+        }
+    }
+
+    spec.describe(fw, "brand — edges and the unknown case") {
+        spec.it("an empty PAN is unknown, not a crash") callback {
+            expect_brand(fw, "", brand.UNKNOWN())
+        }
+        spec.it("a lone leading digit still classifies where it can") callback {
+            expect_brand(fw, "4", brand.VISA())
+            expect_brand(fw, "37", brand.AMEX())
+        }
+        spec.it("a prefix that matches nothing is unknown") callback {
+            expect_brand(fw, "9999999999999999", brand.UNKNOWN())
+        }
+    }
+
+    spec.describe(fw, "brand — the behaviours other sub-components key off") {
+        spec.it("Amex takes a 4-digit CVC, others 3") callback {
+            spec.assert_eq(brand.cvc_length(brand.AMEX()), 4, "amex cvc 4")
+            spec.assert_eq(brand.cvc_length(brand.VISA()), 3, "visa cvc 3")
+            spec.assert_eq(brand.cvc_length(brand.UNKNOWN()), 3, "unknown cvc 3")
+        }
+        spec.it("Amex masks 4-6-5, Diners 4-6-4, default 4-4-4-4") callback {
+            spec.assert_str_eq(brand.number_mask(brand.AMEX()), "4 6 5", "amex mask")
+            spec.assert_str_eq(brand.number_mask(brand.DINERS()), "4 6 4", "diners mask")
+            spec.assert_str_eq(brand.number_mask(brand.VISA()), "4 4 4 4", "visa mask")
+        }
+    }
+
+    return spec.run_summary(fw)
+}

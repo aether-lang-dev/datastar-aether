@@ -1,0 +1,122 @@
+// harness.components.card.brand — the card brand from a PAN prefix.
+//
+// A direct port of vue-paycard's `cardType` computed property (MIT,
+// © 2020 Igor Guastalla — see ../reference/). Vue expressed each brand as
+// a regex against the full number; here the same rules are prefix and
+// length tests, which are clearer in Aether and, being pure, get fast
+// unit tests with no browser.
+//
+// `detect(pan)` takes the raw digits (spaces/format stripped by the
+// caller) and returns a lowercase brand slug, or "" for unknown. The
+// slug is what the preview uses to pick a logo and what the mask/cvc
+// modules key off, so it is the one contract the sub-components share.
+
+import std.string
+
+exports(detect, cvc_length, number_mask, VISA, AMEX, MASTERCARD, DISCOVER,
+    DINERS, JCB, UNIONPAY, MAESTRO, UNKNOWN)
+
+VISA() -> string { return "visa" }
+AMEX() -> string { return "amex" }
+MASTERCARD() -> string { return "mastercard" }
+DISCOVER() -> string { return "discover" }
+DINERS() -> string { return "dinersclub" }
+JCB() -> string { return "jcb" }
+UNIONPAY() -> string { return "unionpay" }
+MAESTRO() -> string { return "maestro" }
+UNKNOWN() -> string { return "" }
+
+// The character at `i` as a digit 0-9, or -1 if out of range / non-digit.
+fn digit_at(s: string, i: int) -> int {
+    if i < 0 || i >= string.length(s) { return -1 }
+    c = string.char_at(s, i)
+    if c < 48 || c > 57 { return -1 }
+    return c - 48
+}
+
+// Does `s` start with the literal `prefix`?
+fn starts_with(s: string, prefix: string) -> int {
+    plen = string.length(prefix)
+    if string.length(s) < plen { return 0 }
+    return string.contains(string.substring(s, 0, plen), prefix)
+}
+
+// Is the first digit in [lo, hi]?
+fn first_in(s: string, lo: int, hi: int) -> int {
+    d = digit_at(s, 0)
+    if d >= lo && d <= hi { return 1 }
+    return 0
+}
+
+// Detect the brand from a PAN's leading digits. The order matters — the
+// most specific prefixes are tested first, mirroring vue-paycard, so a
+// number that could match two rules resolves the way the source did.
+detect(pan: string) -> string {
+    n = string.length(pan)
+    if n == 0 { return UNKNOWN() }
+
+    // Amex: 34 / 37
+    if starts_with(pan, "34") == 1 || starts_with(pan, "37") == 1 { return AMEX() }
+
+    // Diners Club: 300-305, 36, 38
+    if starts_with(pan, "36") == 1 || starts_with(pan, "38") == 1 { return DINERS() }
+    if digit_at(pan, 0) == 3 && digit_at(pan, 1) == 0 {
+        d2 = digit_at(pan, 2)
+        if d2 >= 0 && d2 <= 5 { return DINERS() }
+    }
+
+    // JCB: 3528-3589, or 2131 / 1800
+    if starts_with(pan, "2131") == 1 || starts_with(pan, "1800") == 1 { return JCB() }
+    if digit_at(pan, 0) == 3 && digit_at(pan, 1) == 5 {
+        d23 = digit_at(pan, 2) * 10 + digit_at(pan, 3)
+        if d23 >= 28 && d23 <= 89 { return JCB() }
+    }
+
+    // Visa: starts with 4
+    if first_in(pan, 4, 4) == 1 { return VISA() }
+
+    // Mastercard: 51-55, or 2221-2720
+    if digit_at(pan, 0) == 5 {
+        d1 = digit_at(pan, 1)
+        if d1 >= 1 && d1 <= 5 { return MASTERCARD() }
+    }
+    if digit_at(pan, 0) == 2 {
+        p4 = digit_at(pan, 0) * 1000 + digit_at(pan, 1) * 100 + digit_at(pan, 2) * 10 + digit_at(pan, 3)
+        if p4 >= 2221 && p4 <= 2720 { return MASTERCARD() }
+    }
+
+    // Discover: 6011, 644-649, 65
+    if starts_with(pan, "6011") == 1 { return DISCOVER() }
+    if starts_with(pan, "65") == 1 { return DISCOVER() }
+    if digit_at(pan, 0) == 6 && digit_at(pan, 1) == 4 {
+        d2 = digit_at(pan, 2)
+        if d2 >= 4 && d2 <= 9 { return DISCOVER() }
+    }
+
+    // UnionPay: 62
+    if starts_with(pan, "62") == 1 { return UNIONPAY() }
+
+    // Maestro: 50, 56-58, 6 (broad — tested last, after the 6-prefixes above)
+    if starts_with(pan, "50") == 1 { return MAESTRO() }
+    if digit_at(pan, 0) == 5 {
+        d1 = digit_at(pan, 1)
+        if d1 >= 6 && d1 <= 8 { return MAESTRO() }
+    }
+
+    return UNKNOWN()
+}
+
+// CVC length by brand: Amex uses 4, everyone else 3 (CardJs's CVC_MASK_3/4).
+cvc_length(brand: string) -> int {
+    if brand == AMEX() { return 4 }
+    return 3
+}
+
+// The digit-group mask for a brand, as group sizes. Amex is 4-6-5, Diners
+// 4-6-4, everyone else 4-4-4-4 (CardJs's per-brand number masks). Returned
+// as a formatting hint the number sub-component applies as the user types.
+number_mask(brand: string) -> string {
+    if brand == AMEX() { return "4 6 5" }
+    if brand == DINERS() { return "4 6 4" }
+    return "4 4 4 4"
+}
