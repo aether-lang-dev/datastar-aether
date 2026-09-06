@@ -1,0 +1,143 @@
+// Component tests for card2 — the composed live card. These prove
+// INTEGRATION in a real browser: the pure rules (brand, number, expiry,
+// cvc) already have fast offline tests, so here we only assert that they
+// reach the UI — the brand badge updates, the number formats live in the
+// preview, the card flips on CVV focus, and submit surfaces the right
+// outcome using the mock clock.
+
+import std.spec
+import std.string
+import harness_fixture
+import wd_extra
+import webdriver
+
+const CARD2_URL = "http://127.0.0.1:4321/c/card2"
+
+main() {
+    d = harness_fixture.open_browser()
+    stop = harness_fixture.require_browser(d)
+    if stop != "" {
+        harness_fixture.close_browser(d)
+        fw = spec.init()
+        _s = spec.skip_all_if(fw, 1, stop)
+        if harness_fixture.strict_mode() == 1 { return 1 }
+        return 0
+    }
+    rc = run(d)
+    harness_fixture.close_browser(d)
+    return rc
+}
+
+// --- helpers ---------------------------------------------------------------
+
+fn fresh(d: ptr) {
+    harness_fixture.reset()
+    _c = harness_fixture.post("/_harness/clock", "{\"year\":2026,\"month\":6}")
+    webdriver.get(d, CARD2_URL)
+}
+
+// Type a value into a field one key at a time — the number field only
+// reformats on the `input` event, so we exercise real typing here (this is
+// exactly the case where the suite's fast set_signals would skip what's
+// under test).
+fn type_into(d: ptr, id: string, text: string) {
+    el = webdriver.find(d, webdriver.By_ID(), id)
+    if string.length(el) == 0 { return }
+    webdriver.clear(d, el)
+    if string.length(text) > 0 { webdriver.send_keys(d, el, text) }
+}
+
+// Read whether the preview carries the flipped class.
+fn is_flipped(d: ptr) -> int {
+    script = "const el = document.getElementById('card-preview'); return el ? el.classList.contains('-active') : false;"
+    got = webdriver.execute_script(d, script, "[]")
+    return string.contains(got, "true")
+}
+
+fn run(d: ptr) -> int {
+    fw = spec.init()
+
+    spec.describe(fw, "card2 — the number formats live in the preview") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("a Visa shows 4-4-4-4 groups on the card face") callback {
+            type_into(d, "card2-num", "4242424242424242")
+            ok = harness_fixture.wait_text(d, "card-preview-number", "4242 4242 4242 4242", 3000)
+            spec.assert_eq(ok, 1, "formatted number reaches the preview")
+        }
+        spec.it("an Amex regroups to 4-6-5") callback {
+            type_into(d, "card2-num", "378282246310005")
+            ok = harness_fixture.wait_text(d, "card-preview-number", "3782 822463 10005", 3000)
+            spec.assert_eq(ok, 1, "amex grouping on the face")
+        }
+    }
+
+    spec.describe(fw, "card2 — the brand badge tracks the number") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("typing a Visa lights the visa badge") callback {
+            type_into(d, "card2-num", "4242")
+            ok = harness_fixture.wait_text(d, "card-brand", "visa", 3000)
+            spec.assert_eq(ok, 1, "brand badge = visa")
+        }
+        spec.it("typing an Amex prefix lights amex") callback {
+            type_into(d, "card2-num", "3782")
+            ok = harness_fixture.wait_text(d, "card-brand", "amex", 3000)
+            spec.assert_eq(ok, 1, "brand badge = amex")
+        }
+    }
+
+    spec.describe(fw, "card2 — the card flips for the CVV") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("focusing the CVV flips to the back, blurring flips back") callback {
+            spec.assert_eq(is_flipped(d), 0, "starts on the front")
+            harness_fixture.click(d, "card2-sec")
+            // the flip is a server round trip; give it a beat via the signal
+            _w = wd_extra.wait_for_text(d, webdriver.By_ID(), "card2-sec", "", 200)
+            sleep(300)
+            spec.assert_eq(is_flipped(d), 1, "flipped to the back on focus")
+
+            harness_fixture.click(d, "card2-name")
+            sleep(300)
+            spec.assert_eq(is_flipped(d), 0, "flipped back to the front on blur")
+        }
+    }
+
+    spec.describe(fw, "card2 — submit validates each field") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("declines an expired card (mock clock pinned to 2026-06)") callback {
+            // A card whose expiry is before the pinned clock.
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"4242424242424242\",\"card2-exp-mm\":\"01\",\"card2-exp-yy\":\"2020\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            ok = harness_fixture.wait_text(d, "card2-message", "Card has expired", 3000)
+            spec.assert_eq(ok, 1, "expired card rejected before the processor")
+        }
+        spec.it("rejects a bad Luhn without calling the processor") callback {
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"4242424242424241\",\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            ok = harness_fixture.wait_text(d, "card2-message", "Card number is not valid", 3000)
+            spec.assert_eq(ok, 1, "bad number rejected")
+        }
+        spec.it("wants a 4-digit CVV for an Amex") callback {
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"378282246310005\",\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            ok = harness_fixture.wait_text(d, "card2-message", "Security code must be 4 digits", 3000)
+            spec.assert_eq(ok, 1, "amex demands 4-digit cvc")
+        }
+        spec.it("approves a good card and shows the auth code") callback {
+            _b = harness_fixture.post("/_harness/backend", "{\"outcome\":\"approve\",\"authCode\":\"OK999\"}")
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"4242424242424242\",\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            ok = harness_fixture.wait_text(d, "card2-message", "OK999", 3000)
+            spec.assert_eq(ok, 1, "approved with the code")
+        }
+    }
+
+    return spec.run_summary(fw)
+}
