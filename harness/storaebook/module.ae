@@ -1,5 +1,11 @@
 // harness.storaebook — Datastar StoraeBook, the story browser.
 //
+// A small homage to Storybook (https://storybook.js.org): a story tree,
+// a live canvas, a toolbar, a docs/notes panel, and controls that change
+// a story's state in place. Those UX conventions are adapted from it — no
+// source is ported; this is idiomatic Aether + Datastar. Portions
+// copyright (c) 2024 Storybook, MIT — see reference/storybook-LICENSE.
+//
 // Serves three things:
 //
 //   GET /storaebook              the index: every component, every story
@@ -148,14 +154,57 @@ fn index_page() -> string {
 
     total = stories.story_count()
     return shell("Datastar StoraeBook", "",
-        "<header class=\"sb-head\">
+        "<div class=\"sb-shell\">
+${story_tree("")}
+<div class=\"sb-shell-main\">
+<header class=\"sb-head\">
   <h1>Datastar StoraeBook</h1>
-  <p class=\"sb-sub\">${total} states across ${n} components. Each one is a link: it resets the harness, configures the stub, and serves the component alone.</p>
+  <p class=\"sb-sub\">${total} states across ${n} components. Pick one from the tree, or a card below: it resets the harness, configures the stub, and serves the component alone.</p>
 </header>
 ${sb}
 <footer class=\"sb-foot\">
   <p>Every story configures its stub through <code>/_harness/*</code> — the same control surface the Selenium suite uses. A story you can see is a state a test can drive.</p>
-</footer>")
+</footer>
+</div>
+</div>")
+}
+
+// The story tree — Storybook's sidebar. Component groups, each a native
+// <details> so it collapses with no JS, and the current story marked
+// -active. Shared by the index and every framed page, so navigation is
+// always one click away. `current` is the story id in view, or "" on the
+// index.
+fn story_tree(current: string) -> string {
+    cats = harness_components()
+    out = ""
+    cn = list.size(cats)
+    for (ci = 0; ci < cn; ci++) {
+        cname, _ = list.get(cats, ci)
+        rows = stories.stories_for(cname)
+        items = ""
+        n = list.size(rows)
+        for (i = 0; i < n; i++) {
+            row, _ = list.get(rows, i)
+            id = stories.story_field(row, 0)
+            title = stories.story_field(row, 2)
+            active = ""
+            if id == current { active = " -active" }
+            items = "${items}      <li class=\"sb-tree-story${active}\"><a href=\"${PATH}/${id}\">${title}</a></li>\n"
+        }
+        list.free(rows)
+        // Open the group that contains the current story; open all on the index.
+        open = " open"
+        return_group = "<details class=\"sb-tree-group\"${open}>
+    <summary>${cname}</summary>
+    <ul class=\"sb-tree-list\">
+${items}    </ul>
+  </details>\n"
+        out = "${out}${return_group}"
+    }
+    list.free(cats)
+    return "<nav class=\"sb-tree\">
+  <a class=\"sb-tree-home\" href=\"${PATH}\">Datastar StoraeBook</a>
+${out}</nav>"
 }
 
 fn component_section(name: string) -> string {
@@ -187,15 +236,16 @@ fn framed_page(id: string, component: string, title: string, note: string, body:
     return shell("${title} — ${component}", id,
         "<div class=\"sb-frame\">
   <aside class=\"sb-side\">
-    <p class=\"sb-back\"><a href=\"${PATH}\">&larr; all stories</a></p>
-    <h1 class=\"sb-title\">${title}</h1>
-    <p class=\"sb-note sb-note-lg\">${note}</p>
-    <dl class=\"sb-meta\">
-      <dt>component</dt><dd>${component}</dd>
-      <dt>story</dt><dd><code>${id}</code></dd>
-      <dt>unframed</dt><dd><a id=\"raw-link\" href=\"${PATH}/${id}/raw\">/w/${id}/raw</a></dd>
-    </dl>
-    ${sibling_list(component, id)}
+    ${story_tree(id)}
+    <div class=\"sb-side-meta\">
+      <h1 class=\"sb-title\">${title}</h1>
+      <p class=\"sb-note sb-note-lg\">${note}</p>
+      <dl class=\"sb-meta\">
+        <dt>component</dt><dd>${component}</dd>
+        <dt>story</dt><dd><code>${id}</code></dd>
+        <dt>unframed</dt><dd><a id=\"raw-link\" href=\"${PATH}/${id}/raw\">${PATH}/${id}/raw</a></dd>
+      </dl>
+    </div>
   </aside>
   <main class=\"sb-stage\" id=\"sb-stage\">
 ${body}
@@ -348,9 +398,33 @@ fn shell(title: string, story_id: string, content: string) -> string {
   .sb-stage ul { padding-left: 1.2rem; }
   .sb-stage .unread { font-weight: 700; }
 
+  /* The story tree — Storybook's sidebar. */
+  .sb-tree { padding: 1rem .75rem; }
+  .sb-tree-home { display: block; font-weight: 700; font-size: .95rem;
+                  margin: 0 .25rem 1rem; letter-spacing: -.01em; }
+  .sb-tree-group { margin-bottom: .35rem; }
+  .sb-tree-group > summary {
+    cursor: pointer; list-style: none; padding: .3rem .5rem; border-radius: 6px;
+    font-size: .72rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); }
+  .sb-tree-group > summary::-webkit-details-marker { display: none; }
+  .sb-tree-group > summary::before { content: '▸ '; font-size: .7em; }
+  .sb-tree-group[open] > summary::before { content: '▾ '; }
+  .sb-tree-group > summary:hover { background: var(--accent-soft); color: var(--ink); }
+  .sb-tree-list { list-style: none; margin: .15rem 0 .5rem; padding: 0; }
+  .sb-tree-story a { display: block; padding: .32rem .5rem .32rem 1.4rem;
+                     border-radius: 6px; font-size: .9rem; color: var(--ink); }
+  .sb-tree-story a:hover { background: var(--accent-soft); }
+  .sb-tree-story.-active a { background: var(--accent); color: #fff; font-weight: 600; }
+
+  /* Index laid out with the tree on the left, like a framed page. */
+  .sb-shell { display: grid; grid-template-columns: 16rem 1fr; min-height: 100vh; }
+  .sb-shell > .sb-tree { background: var(--panel); border-right: 1px solid var(--line); }
+  .sb-shell-main { min-width: 0; }
+
   @media (max-width: 52rem) {
-    .sb-frame { grid-template-columns: 1fr; }
-    .sb-side { border-right: 0; border-bottom: 1px solid var(--line); }
+    .sb-frame, .sb-shell { grid-template-columns: 1fr; }
+    .sb-side, .sb-shell > .sb-tree { border-right: 0; border-bottom: 1px solid var(--line); }
     .sb-story { grid-template-columns: 1fr; gap: .15rem; }
   }
 </style>
