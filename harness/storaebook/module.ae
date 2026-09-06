@@ -247,8 +247,18 @@ fn framed_page(id: string, component: string, title: string, note: string, body:
       </dl>
     </div>
   </aside>
-  <main class=\"sb-stage\" id=\"sb-stage\">
+  <main class=\"sb-canvas\" data-signals=\"{sbbg:'light',sbfull:false}\">
+    <div class=\"sb-toolbar\">
+      <span class=\"sb-tb-label\">background</span>
+      <button class=\"sb-tb-btn\" data-on:click=\"\$sbbg='light'\" data-class=\"{'-on': \$sbbg=='light'}\">light</button>
+      <button class=\"sb-tb-btn\" data-on:click=\"\$sbbg='dark'\" data-class=\"{'-on': \$sbbg=='dark'}\">dark</button>
+      <button class=\"sb-tb-btn\" data-on:click=\"\$sbbg='grid'\" data-class=\"{'-on': \$sbbg=='grid'}\">grid</button>
+      <span class=\"sb-tb-gap\"></span>
+      <button class=\"sb-tb-btn\" data-on:click=\"\$sbfull=!\$sbfull\" data-class=\"{'-on': \$sbfull}\">fullscreen</button>
+    </div>
+    <div class=\"sb-stage sb-bg-light\" id=\"sb-stage\" data-class=\"{'sb-bg-light': \$sbbg=='light','sb-bg-dark': \$sbbg=='dark','sb-bg-grid': \$sbbg=='grid','-full': \$sbfull}\">
 ${body}
+    </div>
   </main>
 </div>")
 }
@@ -386,7 +396,30 @@ fn shell(title: string, story_id: string, content: string) -> string {
   /* The stage holds the real component. It gets a plain white card and
      nothing else — no StoraeBook typography inherited into the thing
      under review, or the StoraeBook would be flattering its own output. */
-  .sb-stage { padding: 2rem; }
+  /* The canvas toolbar — Storybook's decorator bar over the stage. */
+  .sb-canvas { display: flex; flex-direction: column; min-width: 0; }
+  .sb-toolbar { display: flex; align-items: center; gap: .35rem;
+                padding: .5rem .9rem; border-bottom: 1px solid var(--line);
+                background: var(--panel); }
+  .sb-tb-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em;
+                 color: var(--muted); margin-right: .3rem; }
+  .sb-tb-gap { flex: 1; }
+  .sb-tb-btn { font: inherit; font-size: .8rem; padding: .25rem .6rem;
+               border: 1px solid var(--line); border-radius: 6px;
+               background: transparent; color: var(--ink); cursor: pointer; }
+  .sb-tb-btn:hover { background: var(--accent-soft); }
+  .sb-tb-btn.-on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* Canvas backgrounds — light / dark / grid, switched from the toolbar. */
+  .sb-bg-light { background: #fbfbfd; }
+  .sb-bg-dark  { background: #1a1d23; }
+  .sb-bg-grid  { background-color: #fbfbfd;
+                 background-image: linear-gradient(#0000000d 1px, transparent 1px),
+                                   linear-gradient(90deg, #0000000d 1px, transparent 1px);
+                 background-size: 16px 16px; }
+  .sb-stage.-full { position: fixed; inset: 0; z-index: 50; overflow: auto; }
+
+  .sb-stage { padding: 2rem; flex: 1; }
   .sb-stage > * { background: var(--panel); border: 1px solid var(--line);
                   border-radius: 12px; padding: 1.5rem 1.75rem; max-width: 34rem; }
   .sb-stage label { display: block; margin-top: .75rem; font-weight: 600; }
