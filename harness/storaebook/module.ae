@@ -116,7 +116,7 @@ fn serve_story(res: ptr, id: string, framed: int) {
         tinyweb.response_write(res, page.wrap("${title} — ${component}", body))
         return
     }
-    tinyweb.response_write(res, framed_page(id, component, title, note, body))
+    tinyweb.response_write(res, framed_page(id, component, title, note, setup, body))
 }
 
 // Route a story's setup to the stub that owns that component. An empty
@@ -232,7 +232,7 @@ ${items}  </ul>
 
 // One story, framed: the component itself, plus what it is and how to
 // reach it without the frame.
-fn framed_page(id: string, component: string, title: string, note: string, body: string) -> string {
+fn framed_page(id: string, component: string, title: string, note: string, setup: string, body: string) -> string {
     return shell("${title} — ${component}", id,
         "<div class=\"sb-frame\">
   <aside class=\"sb-side\">
@@ -247,20 +247,52 @@ fn framed_page(id: string, component: string, title: string, note: string, body:
       </dl>
     </div>
   </aside>
-  <main class=\"sb-canvas\" data-signals=\"{sbbg:'light',sbfull:false}\">
+  <main class=\"sb-canvas\" data-signals=\"{sbbg:'light',sbfull:false,sbtab:'canvas'}\">
     <div class=\"sb-toolbar\">
+      <button class=\"sb-tab\" data-on:click=\"\$sbtab='canvas'\" data-class=\"{'-on': \$sbtab=='canvas'}\">Canvas</button>
+      <button class=\"sb-tab\" data-on:click=\"\$sbtab='docs'\" data-class=\"{'-on': \$sbtab=='docs'}\">Docs</button>
+      <span class=\"sb-tb-gap\"></span>
       <span class=\"sb-tb-label\">background</span>
       <button class=\"sb-tb-btn\" data-on:click=\"\$sbbg='light'\" data-class=\"{'-on': \$sbbg=='light'}\">light</button>
       <button class=\"sb-tb-btn\" data-on:click=\"\$sbbg='dark'\" data-class=\"{'-on': \$sbbg=='dark'}\">dark</button>
       <button class=\"sb-tb-btn\" data-on:click=\"\$sbbg='grid'\" data-class=\"{'-on': \$sbbg=='grid'}\">grid</button>
-      <span class=\"sb-tb-gap\"></span>
       <button class=\"sb-tb-btn\" data-on:click=\"\$sbfull=!\$sbfull\" data-class=\"{'-on': \$sbfull}\">fullscreen</button>
     </div>
-    <div class=\"sb-stage sb-bg-light\" id=\"sb-stage\" data-class=\"{'sb-bg-light': \$sbbg=='light','sb-bg-dark': \$sbbg=='dark','sb-bg-grid': \$sbbg=='grid','-full': \$sbfull}\">
+    <div class=\"sb-stage sb-bg-light\" id=\"sb-stage\" data-show=\"\$sbtab=='canvas'\" data-class=\"{'sb-bg-light': \$sbbg=='light','sb-bg-dark': \$sbbg=='dark','sb-bg-grid': \$sbbg=='grid','-full': \$sbfull}\">
 ${body}
+    </div>
+    <div class=\"sb-docs\" id=\"sb-docs\" data-show=\"\$sbtab=='docs'\">
+${docs_panel(id, component, title, note, setup)}
     </div>
   </main>
 </div>")
+}
+
+// The Docs panel — Storybook's Docs tab. Built from what the story already
+// carries: its note, the setup it applies (the story's \"args\"), and how to
+// reach it. No new per-story field; the documentation is the story data
+// rendered richly.
+fn docs_panel(id: string, component: string, title: string, note: string, setup: string) -> string {
+    setup_shown = setup
+    if setup == "" || setup == "{}" { setup_shown = "{}   (the stub's own defaults)" }
+    return "<article class=\"sb-doc\">
+  <h1>${title}</h1>
+  <p class=\"sb-doc-lede\">${note}</p>
+
+  <h2>What this story pins</h2>
+  <p>Opening it resets every stub, then applies this setup to the <code>${component}</code> stub:</p>
+  <pre class=\"sb-doc-code\">${setup_shown}</pre>
+
+  <h2>Try it</h2>
+  <ul>
+    <li>Switch to the <strong>Canvas</strong> tab and interact with the live component.</li>
+    <li>Compare sibling states from the tree on the left — same component, different pinned world.</li>
+    <li>Open the <a href=\"${PATH}/${id}/raw\">unframed view</a> to see exactly what a test drives.</li>
+  </ul>
+
+  <h2>Under the hood</h2>
+  <p>The setup above is POSTed to <code>/_harness/*</code> — the same control surface the Selenium suite uses. Nothing here is a private path into the stub, so a story you can see is a state a test can drive.</p>
+</article>"
 }
 
 // The other states of the same component, so moving between them is one
@@ -418,6 +450,25 @@ fn shell(title: string, story_id: string, content: string) -> string {
                                    linear-gradient(90deg, #0000000d 1px, transparent 1px);
                  background-size: 16px 16px; }
   .sb-stage.-full { position: fixed; inset: 0; z-index: 50; overflow: auto; }
+
+  /* Canvas / Docs tabs on the left of the toolbar. */
+  .sb-tab { font: inherit; font-size: .85rem; font-weight: 600; padding: .3rem .7rem;
+            border: 0; border-radius: 6px; background: transparent; color: var(--muted);
+            cursor: pointer; }
+  .sb-tab:hover { color: var(--ink); }
+  .sb-tab.-on { background: var(--accent-soft); color: var(--accent); }
+
+  /* The Docs panel — Storybook's Docs tab. */
+  .sb-docs { flex: 1; overflow: auto; padding: 2.5rem; }
+  .sb-doc { max-width: 42rem; margin: 0 auto; }
+  .sb-doc h1 { margin: 0 0 .3rem; font-size: 1.6rem; letter-spacing: -.02em; }
+  .sb-doc-lede { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  .sb-doc h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .09em;
+               color: var(--muted); margin: 1.8rem 0 .5rem; }
+  .sb-doc-code { background: var(--panel); border: 1px solid var(--line);
+                 border-radius: 8px; padding: .8rem 1rem; font-size: .88rem;
+                 overflow-x: auto; }
+  .sb-doc ul { padding-left: 1.2rem; line-height: 1.7; }
 
   .sb-stage { padding: 2rem; flex: 1; }
   .sb-stage > * { background: var(--panel); border: 1px solid var(--line);
