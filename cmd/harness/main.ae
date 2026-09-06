@@ -50,7 +50,7 @@ import std.json
 import std.os
 import datastar
 import harness.components
-import harness.workbench
+import harness.storaebook
 import harness.stories
 import harness.stub.cards
 import harness.stub.messages
@@ -140,16 +140,16 @@ main() {
         // Each mounts its own page route and its own Datastar endpoints.
         components.mount_all()
 
-        // --- the workbench -------------------------------------------------
+        // --- Datastar StoraeBook -------------------------------------------------
         // Named states of those components, one URL each. Mounted after
         // the components so a story route never shadows a component's own
-        // path, and so a component works with the workbench absent.
-        workbench.mount()
+        // path, and so a component works with the StoraeBook absent.
+        storaebook.mount()
     }
 
     println("Datastar component harness on http://127.0.0.1:${port}")
     println("  index:      http://127.0.0.1:${port}/")
-    println("  workbench:  http://127.0.0.1:${port}${workbench.PATH}   (${stories.story_count()} stories)")
+    println("  storaebook: http://127.0.0.1:${port}${storaebook.PATH}   (${stories.story_count()} stories)")
     components.print_mounted(port)
 
     start_err = tinyweb.tw_start(server)

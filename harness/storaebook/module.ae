@@ -1,14 +1,14 @@
-// harness.workbench — the story browser.
+// harness.storaebook — Datastar StoraeBook, the story browser.
 //
 // Serves three things:
 //
-//   GET /w              the index: every component, every story
-//   GET /w/<id>         one story, live, in a frame with its notes
-//   GET /w/<id>/raw     the same story with no workbench chrome
+//   GET /storaebook              the index: every component, every story
+//   GET /storaebook/<id>         one story, live, in a frame with its notes
+//   GET /storaebook/<id>/raw     the same story with no StoraeBook chrome
 //
 // The split between the last two matters more than it looks. The framed
 // view is for a person: sidebar, notes, links to sibling states. The raw
-// view is for a test — and for a screen recording, where workbench chrome
+// view is for a test — and for a screen recording, where StoraeBook chrome
 // would be a distraction. Same story, same setup, same component; only
 // the surroundings differ, so what you review and what you record and
 // what a test drives cannot diverge.
@@ -29,7 +29,7 @@ import harness.stub.messages
 
 exports(mount, PATH)
 
-const PATH = "/w"
+const PATH = "/storaebook"
 
 mount(_ctx: ptr) {
     // The index. Listed first so /w itself is never shadowed by a story
@@ -59,7 +59,7 @@ mount(_ctx: ptr) {
     list.free(all)
 }
 
-// The story id from the request path: everything after "/w/", minus a
+// The story id from the request path: everything after "/storaebook/", minus a
 // trailing "/raw". Read from the request rather than captured in the
 // closure because a trailing-block closure capturing a loop variable
 // would see whatever the loop finished on.
@@ -79,7 +79,7 @@ fn serve_story(res: ptr, id: string, framed: int) {
     if row == "" {
         tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
         tinyweb.response_write_status(res, page.wrap("No such story",
-            "<h1>No story <code>${id}</code></h1><p><a href=\"${PATH}\">Back to the workbench</a></p>"), 404)
+            "<h1>No story <code>${id}</code></h1><p><a href=\"${PATH}\">Back to the StoraeBook</a></p>"), 404)
         return
     }
 
@@ -90,7 +90,7 @@ fn serve_story(res: ptr, id: string, framed: int) {
 
     // Every story starts from a clean world. Without this, opening two
     // stories in sequence would show the second through the first's
-    // leftovers — the failure mode that makes a workbench untrustworthy.
+    // leftovers — the failure mode that makes a StoraeBook untrustworthy.
     cards.reset()
     messages.reset()
 
@@ -147,13 +147,13 @@ fn index_page() -> string {
     list.free(cat)
 
     total = stories.story_count()
-    return shell("Workbench", "",
-        "<header class=\"wb-head\">
-  <h1>Component workbench</h1>
-  <p class=\"wb-sub\">${total} states across ${n} components. Each one is a link: it resets the harness, configures the stub, and serves the component alone.</p>
+    return shell("Datastar StoraeBook", "",
+        "<header class=\"sb-head\">
+  <h1>Datastar StoraeBook</h1>
+  <p class=\"sb-sub\">${total} states across ${n} components. Each one is a link: it resets the harness, configures the stub, and serves the component alone.</p>
 </header>
 ${sb}
-<footer class=\"wb-foot\">
+<footer class=\"sb-foot\">
   <p>Every story configures its stub through <code>/_harness/*</code> — the same control surface the Selenium suite uses. A story you can see is a state a test can drive.</p>
 </footer>")
 }
@@ -167,16 +167,16 @@ fn component_section(name: string) -> string {
         id = stories.story_field(row, 0)
         title = stories.story_field(row, 2)
         note = stories.story_field(row, 4)
-        items = "${items}    <li class=\"wb-story\">
+        items = "${items}    <li class=\"sb-story\">
       <a id=\"story-${slug(id)}\" href=\"${PATH}/${id}\">${title}</a>
-      <span class=\"wb-note\">${note}</span>
+      <span class=\"sb-note\">${note}</span>
     </li>\n"
     }
     list.free(rows)
 
-    return "<section class=\"wb-section\">
+    return "<section class=\"sb-section\">
   <h2>${name}</h2>
-  <ul class=\"wb-list\">
+  <ul class=\"sb-list\">
 ${items}  </ul>
 </section>\n"
 }
@@ -185,19 +185,19 @@ ${items}  </ul>
 // reach it without the frame.
 fn framed_page(id: string, component: string, title: string, note: string, body: string) -> string {
     return shell("${title} — ${component}", id,
-        "<div class=\"wb-frame\">
-  <aside class=\"wb-side\">
-    <p class=\"wb-back\"><a href=\"${PATH}\">&larr; all stories</a></p>
-    <h1 class=\"wb-title\">${title}</h1>
-    <p class=\"wb-note wb-note-lg\">${note}</p>
-    <dl class=\"wb-meta\">
+        "<div class=\"sb-frame\">
+  <aside class=\"sb-side\">
+    <p class=\"sb-back\"><a href=\"${PATH}\">&larr; all stories</a></p>
+    <h1 class=\"sb-title\">${title}</h1>
+    <p class=\"sb-note sb-note-lg\">${note}</p>
+    <dl class=\"sb-meta\">
       <dt>component</dt><dd>${component}</dd>
       <dt>story</dt><dd><code>${id}</code></dd>
       <dt>unframed</dt><dd><a id=\"raw-link\" href=\"${PATH}/${id}/raw\">/w/${id}/raw</a></dd>
     </dl>
     ${sibling_list(component, id)}
   </aside>
-  <main class=\"wb-stage\" id=\"wb-stage\">
+  <main class=\"sb-stage\" id=\"sb-stage\">
 ${body}
   </main>
 </div>")
@@ -214,12 +214,12 @@ fn sibling_list(component: string, current: string) -> string {
         row, _ = list.get(rows, i)
         id = stories.story_field(row, 0)
         title = stories.story_field(row, 2)
-        cls = "wb-sib"
-        if id == current { cls = "wb-sib wb-sib-on" }
+        cls = "sb-sib"
+        if id == current { cls = "sb-sib sb-sib-on" }
         items = "${items}      <li class=\"${cls}\"><a href=\"${PATH}/${id}\">${title}</a></li>\n"
     }
     list.free(rows)
-    return "<h3 class=\"wb-sib-h\">other states</h3>\n    <ul class=\"wb-sibs\">\n${items}    </ul>"
+    return "<h3 class=\"sb-sib-h\">other states</h3>\n    <ul class=\"sb-sibs\">\n${items}    </ul>"
 }
 
 // Components that have at least one story, in the order stories declares
@@ -258,13 +258,13 @@ fn slug(id: string) -> string {
     return out
 }
 
-// The workbench's own page shell.
+// The StoraeBook's own page shell.
 //
 // Separate from `harness.page` on purpose. That shell is deliberately
 // bare so a component test measures the component and not the chrome;
-// this one is the chrome. Keeping them apart means the workbench can look
+// this one is the chrome. Keeping them apart means the StoraeBook can look
 // like a tool without any of it leaking into the surface under test — the
-// raw view uses `harness.page`, so what a test drives has no workbench
+// raw view uses `harness.page`, so what a test drives has no StoraeBook
 // CSS in it at all.
 fn shell(title: string, story_id: string, content: string) -> string {
     return "<!DOCTYPE html>
@@ -272,7 +272,7 @@ fn shell(title: string, story_id: string, content: string) -> string {
 <head>
 <meta charset=\"utf-8\">
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-<title>${title} · workbench</title>
+<title>${title} · Datastar StoraeBook</title>
 <script type=\"module\" src=\"${page.DATASTAR_BUNDLE}\"></script>
 <style>
   :root {
@@ -294,64 +294,64 @@ fn shell(title: string, story_id: string, content: string) -> string {
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
-  .wb-head { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 1rem; }
-  .wb-head h1 { margin: 0; font-size: 1.9rem; letter-spacing: -.02em; }
-  .wb-sub { margin: .4rem 0 0; color: var(--muted); }
+  .sb-head { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 1rem; }
+  .sb-head h1 { margin: 0; font-size: 1.9rem; letter-spacing: -.02em; }
+  .sb-sub { margin: .4rem 0 0; color: var(--muted); }
 
-  .wb-section { max-width: 62rem; margin: 0 auto; padding: 1.25rem 1.5rem 0; }
-  .wb-section h2 {
+  .sb-section { max-width: 62rem; margin: 0 auto; padding: 1.25rem 1.5rem 0; }
+  .sb-section h2 {
     margin: 1.5rem 0 .6rem; font-size: .78rem; font-weight: 700;
     text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
   }
-  .wb-list { list-style: none; margin: 0; padding: 0;
+  .sb-list { list-style: none; margin: 0; padding: 0;
              border: 1px solid var(--line); border-radius: 10px;
              background: var(--panel); overflow: hidden; }
-  .wb-story { display: grid; grid-template-columns: 12rem 1fr; gap: 1rem;
+  .sb-story { display: grid; grid-template-columns: 12rem 1fr; gap: 1rem;
               padding: .7rem 1rem; border-top: 1px solid var(--line); }
-  .wb-story:first-child { border-top: 0; }
-  .wb-story:hover { background: var(--accent-soft); }
-  .wb-story a { font-weight: 600; }
-  .wb-note { color: var(--muted); font-size: .9rem; }
-  .wb-note-lg { font-size: .95rem; margin: .5rem 0 1.25rem; }
+  .sb-story:first-child { border-top: 0; }
+  .sb-story:hover { background: var(--accent-soft); }
+  .sb-story a { font-weight: 600; }
+  .sb-note { color: var(--muted); font-size: .9rem; }
+  .sb-note-lg { font-size: .95rem; margin: .5rem 0 1.25rem; }
 
-  .wb-foot { max-width: 62rem; margin: 2rem auto 3rem; padding: 0 1.5rem;
+  .sb-foot { max-width: 62rem; margin: 2rem auto 3rem; padding: 0 1.5rem;
              color: var(--muted); font-size: .875rem; }
 
-  .wb-frame { display: grid; grid-template-columns: 19rem 1fr; min-height: 100vh; }
-  .wb-side { background: var(--panel); border-right: 1px solid var(--line);
+  .sb-frame { display: grid; grid-template-columns: 19rem 1fr; min-height: 100vh; }
+  .sb-side { background: var(--panel); border-right: 1px solid var(--line);
              padding: 1.5rem 1.25rem; }
-  .wb-back { margin: 0 0 1.25rem; font-size: .875rem; }
-  .wb-title { margin: 0; font-size: 1.2rem; letter-spacing: -.01em; }
-  .wb-meta { margin: 0 0 1.5rem; font-size: .82rem; }
-  .wb-meta dt { color: var(--muted); text-transform: uppercase;
+  .sb-back { margin: 0 0 1.25rem; font-size: .875rem; }
+  .sb-title { margin: 0; font-size: 1.2rem; letter-spacing: -.01em; }
+  .sb-meta { margin: 0 0 1.5rem; font-size: .82rem; }
+  .sb-meta dt { color: var(--muted); text-transform: uppercase;
                 letter-spacing: .07em; font-size: .68rem; margin-top: .7rem; }
-  .wb-meta dd { margin: .15rem 0 0; }
-  .wb-sib-h { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em;
+  .sb-meta dd { margin: .15rem 0 0; }
+  .sb-sib-h { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em;
               color: var(--muted); margin: 0 0 .4rem; }
-  .wb-sibs { list-style: none; margin: 0; padding: 0; font-size: .9rem; }
-  .wb-sib { padding: .25rem 0; }
-  .wb-sib-on a { color: var(--ink); font-weight: 700; }
-  .wb-sib-on a::before { content: '▸ '; color: var(--accent); }
+  .sb-sibs { list-style: none; margin: 0; padding: 0; font-size: .9rem; }
+  .sb-sib { padding: .25rem 0; }
+  .sb-sib-on a { color: var(--ink); font-weight: 700; }
+  .sb-sib-on a::before { content: '▸ '; color: var(--accent); }
 
   /* The stage holds the real component. It gets a plain white card and
-     nothing else — no workbench typography inherited into the thing
-     under review, or the workbench would be flattering its own output. */
-  .wb-stage { padding: 2rem; }
-  .wb-stage > * { background: var(--panel); border: 1px solid var(--line);
+     nothing else — no StoraeBook typography inherited into the thing
+     under review, or the StoraeBook would be flattering its own output. */
+  .sb-stage { padding: 2rem; }
+  .sb-stage > * { background: var(--panel); border: 1px solid var(--line);
                   border-radius: 12px; padding: 1.5rem 1.75rem; max-width: 34rem; }
-  .wb-stage label { display: block; margin-top: .75rem; font-weight: 600; }
-  .wb-stage input { font: inherit; padding: .35rem .5rem; border: 1px solid var(--line);
+  .sb-stage label { display: block; margin-top: .75rem; font-weight: 600; }
+  .sb-stage input { font: inherit; padding: .35rem .5rem; border: 1px solid var(--line);
                     border-radius: 6px; background: var(--bg); color: var(--ink); }
-  .wb-stage button { font: inherit; margin-top: 1rem; padding: .45rem 1.1rem;
+  .sb-stage button { font: inherit; margin-top: 1rem; padding: .45rem 1.1rem;
                      border: 1px solid var(--accent); background: var(--accent);
                      color: #fff; border-radius: 7px; cursor: pointer; }
-  .wb-stage ul { padding-left: 1.2rem; }
-  .wb-stage .unread { font-weight: 700; }
+  .sb-stage ul { padding-left: 1.2rem; }
+  .sb-stage .unread { font-weight: 700; }
 
   @media (max-width: 52rem) {
-    .wb-frame { grid-template-columns: 1fr; }
-    .wb-side { border-right: 0; border-bottom: 1px solid var(--line); }
-    .wb-story { grid-template-columns: 1fr; gap: .15rem; }
+    .sb-frame { grid-template-columns: 1fr; }
+    .sb-side { border-right: 0; border-bottom: 1px solid var(--line); }
+    .sb-story { grid-template-columns: 1fr; gap: .15rem; }
   }
 </style>
 </head>

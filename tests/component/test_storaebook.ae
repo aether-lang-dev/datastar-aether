@@ -1,4 +1,4 @@
-// The workbench, driven through a real browser.
+// Datastar StoraeBook, driven through a real browser.
 //
 // A story list is only worth having if every story still works. This is
 // the check that they do — not that they render, but that each one
@@ -18,10 +18,10 @@ import std.string
 import webdriver
 import harness_fixture
 
-// The workbench root. A plain function rather than a const:
+// The StoraeBook root. A plain function rather than a const:
 // a const initialiser must be a compile-time constant, and this
 // interpolates the fixture's harness URL.
-fn wb() -> string { return "${harness_fixture.HARNESS}/w" }
+fn sb() -> string { return "${harness_fixture.HARNESS}/storaebook" }
 
 main() {
     fw = spec.init()
@@ -29,7 +29,7 @@ main() {
 
     // Same policy as the other component suites: skip locally, fail in CI
     // (COMPONENT_TESTS_REQUIRED=1). This used to always fail, which made a
-    // laptop without a driver look like a broken workbench.
+    // laptop without a driver look like a broken StoraeBook.
     stop = harness_fixture.require_browser(d)
     if stop != "" {
         harness_fixture.close_browser(d)
@@ -38,9 +38,9 @@ main() {
         return 0
     }
 
-    spec.describe(fw, "workbench — the index") {
+    spec.describe(fw, "Datastar StoraeBook — the index") {
         spec.it("lists every story with a link") callback {
-            webdriver.get(d, wb())
+            webdriver.get(d, sb())
             // One link per story, addressed by the id the index gives it.
             expect_link(d, "story-card-blank")
             expect_link(d, "story-card-declined")
@@ -49,11 +49,11 @@ main() {
         }
     }
 
-    spec.describe(fw, "workbench — stories configure the world") {
+    spec.describe(fw, "Datastar StoraeBook — stories configure the world") {
         // The point of the whole thing: opening a URL puts the component
         // into the named state, with no test-side setup at all.
         spec.it("card/declined makes the processor decline") callback {
-            webdriver.get(d, "${wb()}/card/declined/raw")
+            webdriver.get(d, "${sb()}/card/declined/raw")
             pay_a_valid_card(d)
             spec.assert_true(
                 harness_fixture.wait_text(d, "card2-message", "Insufficient funds", 4000) == 1,
@@ -61,7 +61,7 @@ main() {
         }
 
         spec.it("card/approved makes the processor approve, with the story's code") callback {
-            webdriver.get(d, "${wb()}/card/approved/raw")
+            webdriver.get(d, "${sb()}/card/approved/raw")
             pay_a_valid_card(d)
             spec.assert_true(
                 harness_fixture.wait_text(d, "card2-message", "OK123", 4000) == 1,
@@ -69,7 +69,7 @@ main() {
         }
 
         spec.it("inbox/full seeds a corpus the component can search") callback {
-            webdriver.get(d, "${wb()}/inbox/full/raw")
+            webdriver.get(d, "${sb()}/inbox/full/raw")
             search(d, "")
             spec.assert_true(
                 harness_fixture.wait_text(d, "inbox-message", "4 message", 4000) == 1,
@@ -77,23 +77,23 @@ main() {
         }
 
         spec.it("inbox/empty seeds nothing") callback {
-            webdriver.get(d, "${wb()}/inbox/empty/raw")
+            webdriver.get(d, "${sb()}/inbox/empty/raw")
             search(d, "")
             spec.assert_true(
                 harness_fixture.wait_text(d, "inbox-message", "No messages", 4000) == 1,
                 "the empty story really is empty")
         }
 
-        // Isolation is the property that makes a workbench trustworthy:
+        // Isolation is the property that makes a StoraeBook trustworthy:
         // whatever the last story did must not leak into this one. Loading
         // a four-message story and then a one-message story in the same
         // browser is the cheapest way to prove the reset runs.
         spec.it("a story resets whatever the previous one set up") callback {
-            webdriver.get(d, "${wb()}/inbox/full/raw")
+            webdriver.get(d, "${sb()}/inbox/full/raw")
             search(d, "")
             _seen = harness_fixture.wait_text(d, "inbox-message", "4 message", 4000)
 
-            webdriver.get(d, "${wb()}/inbox/one/raw")
+            webdriver.get(d, "${sb()}/inbox/one/raw")
             search(d, "")
             spec.assert_true(
                 harness_fixture.wait_text(d, "inbox-message", "1 message", 4000) == 1,
@@ -101,19 +101,19 @@ main() {
         }
     }
 
-    spec.describe(fw, "workbench — the frame") {
+    spec.describe(fw, "Datastar StoraeBook — the frame") {
         spec.it("offers an unframed view of the same story") callback {
-            webdriver.get(d, "${wb()}/card/declined")
+            webdriver.get(d, "${sb()}/card/declined")
             spec.assert_eq(webdriver.exists(d, webdriver.By_ID(), "raw-link"), 1,
                 "the framed page links to its raw view")
         }
 
         // The raw view is what tests and screen recordings use, so it must
-        // carry none of the workbench's own chrome.
-        spec.it("the unframed view has no workbench chrome") callback {
-            webdriver.get(d, "${wb()}/card/declined/raw")
+        // carry none of the StoraeBook's own chrome.
+        spec.it("the unframed view has no StoraeBook chrome") callback {
+            webdriver.get(d, "${sb()}/card/declined/raw")
             markup = webdriver.page_source(d)
-            spec.assert_eq(string.contains(markup, "wb-side"), 0,
+            spec.assert_eq(string.contains(markup, "sb-side"), 0,
                 "the raw view is the component alone")
             spec.assert_true(string.contains(markup, "card2-component") == 1,
                 "...but it is still the component")
