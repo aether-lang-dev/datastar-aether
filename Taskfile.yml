@@ -149,6 +149,33 @@ tasks:
     cmds:
       - ae run cmd/harness/main.ae
 
+  storaebook:
+    desc: Leave Datastar StoraeBook up for human exploration, browser open at the gallery
+    # The same server the tests drive, but started to be LOOKED AT rather
+    # than torn down: it runs in the foreground until Ctrl+C, and once it
+    # is listening we open a browser straight at the story gallery. Every
+    # story is a live component in a pinned state — click one, poke it, it
+    # is the real thing with the slow backend stubbed. Just like Storybook.
+    cmds:
+      - |
+        ae run cmd/harness/main.ae &
+        SERVER_PID=$!
+        trap "kill $SERVER_PID 2>/dev/null" EXIT INT TERM
+        URL="http://127.0.0.1:4321/storaebook"
+        # Wait for the listener before opening, rather than racing it.
+        for i in $(seq 1 40); do
+          curl -sf -o /dev/null "$URL" && break
+          sleep 0.25
+        done
+        echo ""
+        echo "  Datastar StoraeBook is up:  $URL"
+        echo "  (Ctrl+C to stop)"
+        echo ""
+        if command -v xdg-open >/dev/null; then xdg-open "$URL" >/dev/null 2>&1
+        elif command -v open >/dev/null; then open "$URL" >/dev/null 2>&1
+        else echo "  Open it yourself: $URL"; fi
+        wait $SERVER_PID
+
   # One suite per component. Both share harness_fixture, so a new
   # rectangle means a new test_<name>.ae and one more line here.
   #
