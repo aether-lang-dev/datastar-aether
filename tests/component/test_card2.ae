@@ -57,6 +57,24 @@ fn is_flipped(d: ptr) -> int {
 fn run(d: ptr) -> int {
     fw = spec.init()
 
+    // One happy-path test for the preview as a whole: fill every field and
+    // assert the card face shows all of it at once — number, holder, expiry,
+    // brand. The pieces are checked individually below; this proves they
+    // compose into a coherent card.
+    spec.describe(fw, "card2 — the preview shows a filled card") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("renders number, holder, expiry and brand together") callback {
+            type_into(d, "card2-name", "ADA LOVELACE")
+            type_into(d, "card2-num", "4242424242424242")
+            _f = harness_fixture.fill_fast(d, "{\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"31\"}")
+            spec.assert_eq(harness_fixture.wait_text(d, "card-preview-number", "4242 4242 4242 4242", 3000), 1, "number on the face")
+            spec.assert_eq(harness_fixture.wait_text(d, "card-preview-name", "ADA LOVELACE", 3000), 1, "holder on the face")
+            spec.assert_eq(harness_fixture.wait_text(d, "card-preview-date", "11/31", 3000), 1, "expiry on the face")
+            spec.assert_eq(harness_fixture.wait_text(d, "card-brand", "visa", 3000), 1, "brand on the face")
+        }
+    }
+
     spec.describe(fw, "card2 — the number formats live in the preview") {
         spec.before_each() callback { fresh(d) }
 
@@ -129,6 +147,13 @@ fn run(d: ptr) -> int {
             ok = harness_fixture.wait_text(d, "card2-message", "Security code must be 4 digits", 3000)
             spec.assert_eq(ok, 1, "amex demands 4-digit cvc")
         }
+        spec.it("rejects an out-of-range expiry month") callback {
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"4242424242424242\",\"card2-exp-mm\":\"13\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            ok = harness_fixture.wait_text(d, "card2-message", "Expiry month must be 01-12", 3000)
+            spec.assert_eq(ok, 1, "month 13 rejected")
+        }
         spec.it("approves a good card and shows the auth code") callback {
             _b = harness_fixture.post("/_harness/backend", "{\"outcome\":\"approve\",\"authCode\":\"OK999\"}")
             _f = harness_fixture.fill_fast(d,
@@ -136,6 +161,43 @@ fn run(d: ptr) -> int {
             harness_fixture.click(d, "card2-submit")
             ok = harness_fixture.wait_text(d, "card2-message", "OK999", 3000)
             spec.assert_eq(ok, 1, "approved with the code")
+        }
+    }
+
+    // The processor's own outcomes — the same paths the original card
+    // proved, ported so nothing is lost when it is retired.
+    spec.describe(fw, "card2 — backend outcomes") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("surfaces the processor's decline reason") callback {
+            _b = harness_fixture.post("/_harness/backend", "{\"outcome\":\"decline\",\"message\":\"Insufficient funds\"}")
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"4242424242424242\",\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            ok = harness_fixture.wait_text(d, "card2-message", "Insufficient funds", 3000)
+            spec.assert_eq(ok, 1, "decline reason surfaced")
+        }
+        spec.it("surfaces a processor error as a decline") callback {
+            _b = harness_fixture.post("/_harness/backend", "{\"outcome\":\"error\",\"message\":\"processor timeout\"}")
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"4242424242424242\",\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            ok = harness_fixture.wait_text(d, "card2-message", "processor timeout", 3000)
+            spec.assert_eq(ok, 1, "error shown as a decline")
+        }
+        spec.it("shows a pending state while the processor is slow") callback {
+            // The one test that WANTS latency — long enough to observe the
+            // intermediate state, short enough to stay fast. 2s, for the
+            // reason the original documents: at 600ms `pending` resolved
+            // before the first read on a loaded machine.
+            _b = harness_fixture.post("/_harness/backend", "{\"outcome\":\"approve\",\"delayMs\":2000}")
+            _f = harness_fixture.fill_fast(d,
+                "{\"card2-num\":\"4242424242424242\",\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            harness_fixture.click(d, "card2-submit")
+            spec.assert_eq(harness_fixture.wait_text(d, "card2-status", "pending", 3000), 1,
+                "pending visible while the processor works")
+            spec.assert_eq(harness_fixture.wait_text(d, "card2-status", "approved", 4000), 1,
+                "and it resolves to approved")
         }
     }
 

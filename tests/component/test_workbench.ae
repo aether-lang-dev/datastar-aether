@@ -56,7 +56,7 @@ main() {
             webdriver.get(d, "${wb()}/card/declined/raw")
             pay_a_valid_card(d)
             spec.assert_true(
-                harness_fixture.wait_text(d, "card-message", "Insufficient funds", 4000) == 1,
+                harness_fixture.wait_text(d, "card2-message", "Insufficient funds", 4000) == 1,
                 "the decline story produced the decline reason")
         }
 
@@ -64,7 +64,7 @@ main() {
             webdriver.get(d, "${wb()}/card/approved/raw")
             pay_a_valid_card(d)
             spec.assert_true(
-                harness_fixture.wait_text(d, "card-message", "OK123", 4000) == 1,
+                harness_fixture.wait_text(d, "card2-message", "OK123", 4000) == 1,
                 "the approval story's own auth code came back")
         }
 
@@ -115,7 +115,7 @@ main() {
             markup = webdriver.page_source(d)
             spec.assert_eq(string.contains(markup, "wb-side"), 0,
                 "the raw view is the component alone")
-            spec.assert_true(string.contains(markup, "card-component") == 1,
+            spec.assert_true(string.contains(markup, "card2-component") == 1,
                 "...but it is still the component")
         }
     }
@@ -130,11 +130,11 @@ fn expect_link(d: ptr, id: string) {
 }
 
 fn pay_a_valid_card(d: ptr) {
-    type_into(d, "card-num", "4242424242424242")
-    type_into(d, "card-exp-mm", "11")
-    type_into(d, "card-exp-yy", "2030")
-    type_into(d, "card-sec", "123")
-    _r = harness_fixture.click_fast(d, "card-submit")
+    type_into(d, "card2-num", "4242424242424242")
+    type_into(d, "card2-exp-mm", "11")
+    type_into(d, "card2-exp-yy", "2030")
+    type_into(d, "card2-sec", "123")
+    _r = harness_fixture.click_fast(d, "card2-submit")
     sleep(60)
 }
 

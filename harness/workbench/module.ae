@@ -22,7 +22,7 @@ import std.string
 import std.list
 import harness.page
 import harness.stories
-import harness.components.card
+import harness.components.card2
 import harness.components.inbox
 import harness.stub.cards
 import harness.stub.messages
@@ -123,7 +123,7 @@ fn apply_setup(component: string, setup: string) -> string {
 }
 
 fn component_fragment(component: string) -> string {
-    if component == "card" { return card.fragment() }
+    if component == "card" { return card2.fragment() }
     if component == "inbox" { return inbox.fragment() }
     return "<p>No such component: ${component}</p>"
 }

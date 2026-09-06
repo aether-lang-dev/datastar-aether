@@ -14,7 +14,6 @@ import contrib.tinyweb
 import std.string
 import std.list
 import harness.page
-import harness.components.card
 import harness.components.card2
 import harness.components.inbox
 
@@ -25,7 +24,6 @@ exports(mount_all, index_page, print_mounted, catalogue)
 // from one edit.
 catalogue() -> ptr {
     l = list.new()
-    list.add(l, "card|${card.PATH}|credit-card entry — validation, a slow processor, decline paths")
     list.add(l, "card2|${card2.PATH}|live card preview + as-you-type formatting, brand detection, flip")
     list.add(l, "inbox|${inbox.PATH}|filtered message list — server-rendered, patches elements")
     return l
@@ -34,7 +32,6 @@ catalogue() -> ptr {
 // Mount every component's routes. Called inside the harness's
 // web_server_host block, so tinyweb's builder context is live.
 mount_all(_ctx: ptr) {
-    card.mount(_ctx)
     card2.mount(_ctx)
     inbox.mount(_ctx)
 }
