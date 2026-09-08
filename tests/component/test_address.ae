@@ -1,0 +1,132 @@
+// Component tests for the international address form. The pure per-country
+// rules are pinned offline in tests/test_address.ae; these prove the
+// Datastar showcase in a real browser — that picking a country re-renders
+// the field set server-side, and that a postcode wrong for the chosen
+// country is caught.
+
+import std.spec
+import std.string
+import harness_fixture
+import wd_extra
+import webdriver
+
+const ADDRESS_URL = "http://127.0.0.1:4321/c/address"
+
+main() {
+    d = harness_fixture.open_browser()
+    stop = harness_fixture.require_browser(d)
+    if stop != "" {
+        harness_fixture.close_browser(d)
+        fw = spec.init()
+        _s = spec.skip_all_if(fw, 1, stop)
+        if harness_fixture.strict_mode() == 1 { return 1 }
+        return 0
+    }
+    rc = run(d)
+    harness_fixture.close_browser(d)
+    return rc
+}
+
+fn fresh(d: ptr) {
+    harness_fixture.reset()
+    webdriver.get(d, ADDRESS_URL)
+}
+
+// Select a country and let the server re-render the fields. The change
+// event is what the component listens for.
+fn pick_country(d: ptr, cc: string) {
+    _s = webdriver.execute_script(d,
+        "const s=document.getElementById('address-country'); s.value='${cc}'; s.dispatchEvent(new Event('change')); return 'ok';", "[]")
+}
+
+// Does an element with this id exist right now?
+fn present(d: ptr, id: string) -> int {
+    got = webdriver.execute_script(d,
+        "return document.getElementById('${id}') ? 'yes' : 'no';", "[]")
+    return string.contains(got, "yes")
+}
+
+// The visible label text for a field id's <label for=...>. Uses
+// getElementById on the field then previousElementSibling (the label sits
+// immediately before its input in render_fields) — avoids a querySelector
+// with nested escaped quotes, which does not survive this much string
+// nesting intact.
+fn label_of(d: ptr, id: string) -> string {
+    return webdriver.execute_script(d,
+        "const e=document.getElementById('${id}'); const l=e?e.previousElementSibling:null; return l&&l.tagName=='LABEL' ? l.textContent : '';", "[]")
+}
+
+fn run(d: ptr) -> int {
+    fw = spec.init()
+
+    spec.describe(fw, "address — the country picks the field set") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("US shows a State region select and a ZIP field") callback {
+            pick_country(d, "US")
+            spec.assert_eq(harness_fixture.wait_text(d, "address-region", "", 3000) >= 0, 1, "region rendered")
+            sleep(400)
+            spec.assert_eq(present(d, "address-region"), 1, "has a region field")
+            spec.assert_true(string.contains(label_of(d, "address-postcode"), "ZIP"), "postcode labelled ZIP")
+        }
+
+        spec.it("switching to the UK relabels to County + Postcode") callback {
+            pick_country(d, "GB")
+            sleep(600)
+            spec.assert_true(string.contains(label_of(d, "address-region"), "County"), "region is County")
+            spec.assert_true(string.contains(label_of(d, "address-postcode"), "Postcode"), "postcode label")
+        }
+
+        spec.it("Japan leads with the postal code and a Prefecture") callback {
+            pick_country(d, "JP")
+            sleep(600)
+            spec.assert_eq(present(d, "address-postcode"), 1, "postal present")
+            spec.assert_true(string.contains(label_of(d, "address-region"), "Prefecture"), "prefecture")
+            // JP order: postcode field comes before the street line in the DOM.
+            order = webdriver.execute_script(d,
+                "const ids=[...document.querySelectorAll('#address-fields [id^=address-]')].map(e=>e.id); return ids.indexOf('address-postcode') < ids.indexOf('address-line1') ? 'postal-first' : 'street-first';", "[]")
+            spec.assert_true(string.contains(order, "postal-first"), "postal code leads")
+        }
+
+        spec.it("Germany drops the region field entirely") callback {
+            pick_country(d, "DE")
+            sleep(600)
+            spec.assert_eq(present(d, "address-region"), 0, "no region field for DE")
+            spec.assert_true(string.contains(label_of(d, "address-postcode"), "PLZ"), "PLZ label")
+        }
+    }
+
+    spec.describe(fw, "address — postcode is validated for the chosen country") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("a US ZIP that is fine would fail as a UK postcode") callback {
+            // 90210 is a valid US ZIP but not a UK postcode — pick GB, enter it, reject.
+            pick_country(d, "GB")
+            sleep(600)
+            _f = wd_extra.set_signals(d, "{\"address-postcode\":\"90210\"}")
+            harness_fixture.click(d, "address-submit")
+            ok = harness_fixture.wait_text(d, "address-message", "Not a valid GB postcode", 3000)
+            spec.assert_eq(ok, 1, "US-shaped ZIP rejected under GB")
+        }
+
+        spec.it("a correct UK postcode saves") callback {
+            pick_country(d, "GB")
+            sleep(600)
+            _f = wd_extra.set_signals(d, "{\"address-postcode\":\"SW1A 1AA\"}")
+            harness_fixture.click(d, "address-submit")
+            ok = harness_fixture.wait_text(d, "address-status", "saved", 3000)
+            spec.assert_eq(ok, 1, "valid UK postcode accepted")
+        }
+
+        spec.it("a bad Japanese postal code is caught") callback {
+            pick_country(d, "JP")
+            sleep(600)
+            _f = wd_extra.set_signals(d, "{\"address-postcode\":\"1000001\"}")
+            harness_fixture.click(d, "address-submit")
+            ok = harness_fixture.wait_text(d, "address-message", "Not a valid JP postcode", 3000)
+            spec.assert_eq(ok, 1, "missing hyphen rejected")
+        }
+    }
+
+    return spec.run_summary(fw)
+}
