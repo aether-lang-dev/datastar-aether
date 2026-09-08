@@ -26,6 +26,28 @@ Aether **0.643.0** or later for the component tests (the SDK's core
 builds on much older), and `contrib.tinyweb` for the examples' routing
 (it ships with a standard Aether install).
 
+### Getting the toolchain
+
+Installing `ae` needs only `curl` — the toolchain installs a prebuilt
+binary, no compiler and no `make`. The one-liner pins a known-good
+release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aether/main/get.sh \
+  | AETHER_REF=v0.650.0 sh
+```
+
+(`AETHER_REF` selects the release; drop it for the latest. Prefer the
+piped form to `sh -c "$(curl …)"`. To see fetch/progress on your own
+terminal, download first and run it: `curl … -o get.sh &&
+AETHER_REF=v0.650.0 sh get.sh`. Pin this in CI.)
+
+This repo builds and tests with plain `ae` — no `aeb` (the polyglot
+build runner) and no `aeo` (the container orchestrator); those are for
+multi-language / containerized projects. The one external dependency,
+the Selenium binding for the component tests, is a normal `ae add` (see
+[Testing](#testing)); everything else is `task` targets over `ae`.
+
 Fixes and features this SDK depends on, all upstream — several fixed at
 this port's request:
 
