@@ -1,0 +1,85 @@
+// Fast, offline tests for the address component's pure logic: per-country
+// field specs and postcode validation. The browser tests only need to
+// prove the country switch re-renders and a bad postcode is rejected in
+// the DOM; every country's exact rule is pinned here, cheaply.
+
+import std.spec
+import std.string
+import std.list
+import harness.components.address.spec
+import harness.components.address.validate
+
+// field keys, in order, for a country — for asserting layout.
+fn field_keys(cc: string) -> string {
+    l = spec.fields(cc)
+    out = ""
+    n = list.size(l)
+    for (i = 0; i < n; i++) {
+        row, _ = list.get(l, i)
+        key = string.substring(row, 0, string.index_of(row, "|"))
+        if i > 0 { out = "${out},${key}" } else { out = key }
+    }
+    list.free(l)
+    return out
+}
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "address — the field set differs by country") {
+        spec.it("US: street, city, state, ZIP") callback {
+            spec.assert_str_eq(field_keys("US"), "line1,city,region,postcode", "US layout")
+        }
+        spec.it("GB: county is free-text, not a region select") callback {
+            spec.assert_str_eq(field_keys("GB"), "line1,city,region,postcode", "GB layout")
+            spec.assert_eq(spec.has_regions("GB"), 0, "GB county is free text")
+        }
+        spec.it("JP leads with the postal code and runs large-to-small") callback {
+            spec.assert_str_eq(field_keys("JP"), "postcode,region,city,line1", "JP order reversed")
+        }
+        spec.it("DE has no region field at all") callback {
+            spec.assert_str_eq(field_keys("DE"), "line1,postcode,city", "DE layout")
+            spec.assert_eq(spec.has_regions("DE"), 0, "DE no region")
+        }
+    }
+
+    spec.describe(fw, "address — region selects where the country has them") {
+        spec.it("US and JP carry region lists") callback {
+            spec.assert_eq(spec.has_regions("US"), 1, "US states")
+            spec.assert_eq(spec.has_regions("JP"), 1, "JP prefectures")
+            us = spec.regions("US")
+            spec.assert_true(list.size(us) > 0, "US has region options")
+            list.free(us)
+        }
+    }
+
+    spec.describe(fw, "address — postcode validation per country") {
+        spec.it("US ZIP: 5 digits or ZIP+4") callback {
+            spec.assert_str_eq(validate.postcode("US", "90210"), validate.VALID(), "5-digit ok")
+            spec.assert_str_eq(validate.postcode("US", "90210-1234"), validate.VALID(), "ZIP+4 ok")
+            spec.assert_str_eq(validate.postcode("US", "9021"), validate.ERR_FORMAT("US"), "4-digit rejected")
+            spec.assert_str_eq(validate.postcode("US", "ABCDE"), validate.ERR_FORMAT("US"), "letters rejected")
+        }
+        spec.it("GB postcode: outward + inward") callback {
+            spec.assert_str_eq(validate.postcode("GB", "SW1A 1AA"), validate.VALID(), "SW1A 1AA ok")
+            spec.assert_str_eq(validate.postcode("GB", "M1 1AE"), validate.VALID(), "M1 1AE ok")
+            spec.assert_str_eq(validate.postcode("GB", "B33 8TH"), validate.VALID(), "B33 8TH ok")
+            spec.assert_str_eq(validate.postcode("GB", "12345"), validate.ERR_FORMAT("GB"), "digits-only rejected")
+            spec.assert_str_eq(validate.postcode("GB", "SW1A1AA"), validate.ERR_FORMAT("GB"), "no space rejected")
+        }
+        spec.it("JP postal: ###-####") callback {
+            spec.assert_str_eq(validate.postcode("JP", "100-0001"), validate.VALID(), "100-0001 ok")
+            spec.assert_str_eq(validate.postcode("JP", "1000001"), validate.ERR_FORMAT("JP"), "no hyphen rejected")
+        }
+        spec.it("DE PLZ: 5 digits") callback {
+            spec.assert_str_eq(validate.postcode("DE", "10115"), validate.VALID(), "10115 ok")
+            spec.assert_str_eq(validate.postcode("DE", "1011"), validate.ERR_FORMAT("DE"), "4-digit rejected")
+        }
+        spec.it("an empty postcode is required, in any country") callback {
+            spec.assert_str_eq(validate.postcode("US", ""), validate.ERR_REQUIRED(), "US required")
+            spec.assert_str_eq(validate.postcode("JP", ""), validate.ERR_REQUIRED(), "JP required")
+        }
+    }
+
+    return spec.run_summary(fw)
+}

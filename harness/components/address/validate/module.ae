@@ -1,0 +1,101 @@
+// harness.components.address.validate — per-country postcode validation.
+//
+// Pure and offline-tested, like the card's rules. Each country's postcode
+// has a distinct shape; getting the wrong one is the classic i18n bug this
+// component exists to show being caught. Patterns are checked by hand
+// rather than regex (std has no portable regex here, and these shapes are
+// simple), the same choice the brand module made.
+//
+//   US  #####  or  #####-####      (ZIP / ZIP+4)
+//   GB  A(A)N(A/N) NAA             (outward + inward, e.g. SW1A 1AA, M1 1AE)
+//   JP  ###-####                   (7 digits, hyphen after 3)
+//   DE  #####                      (5 digits)
+
+import std.string
+
+exports(postcode, VALID, ERR_REQUIRED, ERR_FORMAT)
+
+VALID() -> string { return "" }
+ERR_REQUIRED() -> string { return "Postcode is required" }
+ERR_FORMAT(cc: string) -> string { return "Not a valid ${cc} postcode" }
+
+fn is_digit(c: int) -> int { if c >= 48 && c <= 57 { return 1 } return 0 }
+fn is_upper(c: int) -> int { if c >= 65 && c <= 90 { return 1 } return 0 }
+fn is_alpha(c: int) -> int {
+    if is_upper(c) == 1 { return 1 }
+    if c >= 97 && c <= 122 { return 1 }
+    return 0
+}
+
+// Count digits / strip a specific char, small helpers over char_at.
+fn all_digits(s: string) -> int {
+    n = string.length(s)
+    if n == 0 { return 0 }
+    for (i = 0; i < n; i++) { if is_digit(string.char_at(s, i)) == 0 { return 0 } }
+    return 1
+}
+
+// Uppercase a single ASCII letter code point.
+fn up(c: int) -> int { if c >= 97 && c <= 122 { return c - 32 } return c }
+
+postcode(cc: string, value: string) -> string {
+    if string.length(value) == 0 { return ERR_REQUIRED() }
+
+    if cc == "US" { if us_zip(value) == 1 { return VALID() } return ERR_FORMAT("US") }
+    if cc == "DE" { if de_plz(value) == 1 { return VALID() } return ERR_FORMAT("DE") }
+    if cc == "JP" { if jp_postal(value) == 1 { return VALID() } return ERR_FORMAT("JP") }
+    if cc == "GB" { if gb_postcode(value) == 1 { return VALID() } return ERR_FORMAT("GB") }
+
+    // Unknown country: accept anything non-empty rather than reject.
+    return VALID()
+}
+
+// US: ##### or #####-####
+fn us_zip(s: string) -> int {
+    n = string.length(s)
+    if n == 5 { return all_digits(s) }
+    if n == 10 {
+        if string.char_at(s, 5) != 45 { return 0 }  // '-'
+        return all_digits(string.substring(s, 0, 5)) & all_digits(string.substring(s, 6, 10))
+    }
+    return 0
+}
+
+// DE: exactly 5 digits.
+fn de_plz(s: string) -> int {
+    if string.length(s) != 5 { return 0 }
+    return all_digits(s)
+}
+
+// JP: ###-#### (3 digits, hyphen, 4 digits).
+fn jp_postal(s: string) -> int {
+    if string.length(s) != 8 { return 0 }
+    if string.char_at(s, 3) != 45 { return 0 }
+    return all_digits(string.substring(s, 0, 3)) & all_digits(string.substring(s, 4, 8))
+}
+
+// GB: the outward+inward form. Accept the common shapes, case-insensitive,
+// with exactly one space: outward is 2-4 chars starting with a letter,
+// inward is always digit-letter-letter. This matches SW1A 1AA, M1 1AE,
+// EC1A 1BB, B33 8TH without importing the full BS7666 grammar.
+fn gb_postcode(s: string) -> int {
+    // split on the single space
+    sp = string.index_of(s, " ")
+    if sp < 0 { return 0 }
+    out = string.substring(s, 0, sp)
+    inw = string.substring(s, sp + 1, string.length(s))
+    ol = string.length(out)
+    if ol < 2 || ol > 4 { return 0 }
+    // outward: first char a letter, remainder letters/digits
+    if is_alpha(string.char_at(out, 0)) == 0 { return 0 }
+    for (i = 1; i < ol; i++) {
+        c = string.char_at(out, i)
+        if is_alpha(c) == 0 && is_digit(c) == 0 { return 0 }
+    }
+    // inward: exactly N A A
+    if string.length(inw) != 3 { return 0 }
+    if is_digit(string.char_at(inw, 0)) == 0 { return 0 }
+    if is_alpha(string.char_at(inw, 1)) == 0 { return 0 }
+    if is_alpha(string.char_at(inw, 2)) == 0 { return 0 }
+    return 1
+}

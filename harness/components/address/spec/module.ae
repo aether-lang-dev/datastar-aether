@@ -1,0 +1,118 @@
+// harness.components.address.spec — the per-country address field spec.
+//
+// The whole point of the address component as a Datastar showcase: an
+// address form is NOT one shape. A US address wants State + a 5-digit ZIP;
+// the UK wants County + an alphanumeric postcode; Japan leads with a 〒
+// postal code and a Prefecture and runs large-to-small; Germany pairs a
+// PLZ with the city on one line. Picking a country re-renders the field
+// set — server-side, since that is where Datastar puts the decision.
+//
+// This module is PURE: it answers "what fields, in what order, with what
+// labels and validation, for country C". No I/O, so it unit-tests fast,
+// and the component just renders whatever spec() returns. Adding a country
+// is a case here plus a postcode rule in ../validate — no UI change.
+//
+// A field is "key|label|kind" where kind is text | postcode | region.
+// `region` renders as a <select> of that country's regions; text and
+// postcode are inputs (postcode carries the country's format hint).
+
+import std.string
+import std.list
+
+exports(countries, country_name, fields, regions, has_regions,
+    postcode_label, postcode_hint)
+
+// The countries the showcase offers, in menu order. ISO-3166 alpha-2.
+countries() -> ptr {
+    l = list.new()
+    list.add(l, "US")
+    list.add(l, "GB")
+    list.add(l, "JP")
+    list.add(l, "DE")
+    return l
+}
+
+country_name(cc: string) -> string {
+    if cc == "US" { return "United States" }
+    if cc == "GB" { return "United Kingdom" }
+    if cc == "JP" { return "Japan" }
+    if cc == "DE" { return "Germany" }
+    return cc
+}
+
+// The ordered field list for a country. Each entry: "key|label|kind".
+// Order matters — JP deliberately leads with the postal code and runs
+// large-to-small, which is the visible payoff of country-driven layout.
+fields(cc: string) -> ptr {
+    l = list.new()
+    if cc == "US" {
+        list.add(l, "line1|Street address|text")
+        list.add(l, "city|City|text")
+        list.add(l, "region|State|region")
+        list.add(l, "postcode|ZIP code|postcode")
+    } else if cc == "GB" {
+        list.add(l, "line1|Address|text")
+        list.add(l, "city|Town / City|text")
+        list.add(l, "region|County|text")
+        list.add(l, "postcode|Postcode|postcode")
+    } else if cc == "JP" {
+        // Large-to-small: postal code first, then prefecture, then city,
+        // then the street line — the Japanese address order.
+        list.add(l, "postcode|郵便番号 (Postal code)|postcode")
+        list.add(l, "region|都道府県 (Prefecture)|region")
+        list.add(l, "city|市区町村 (City)|text")
+        list.add(l, "line1|番地 (Street)|text")
+    } else if cc == "DE" {
+        list.add(l, "line1|Straße und Hausnummer|text")
+        list.add(l, "postcode|PLZ|postcode")
+        list.add(l, "city|Stadt|text")
+    } else {
+        list.add(l, "line1|Address|text")
+        list.add(l, "city|City|text")
+        list.add(l, "postcode|Postal code|postcode")
+    }
+    return l
+}
+
+// Does this country render a region <select> (vs a free-text region or
+// none)? US and JP have canonical region lists; GB uses free-text county;
+// DE has no region field.
+has_regions(cc: string) -> int {
+    if cc == "US" || cc == "JP" { return 1 }
+    return 0
+}
+
+// The region options for a country's <select>. A representative subset —
+// enough to prove the mechanism and to test against, not the full list.
+regions(cc: string) -> ptr {
+    l = list.new()
+    if cc == "US" {
+        list.add(l, "CA|California")
+        list.add(l, "NY|New York")
+        list.add(l, "TX|Texas")
+        list.add(l, "WA|Washington")
+    } else if cc == "JP" {
+        list.add(l, "13|東京都 (Tokyo)")
+        list.add(l, "27|大阪府 (Osaka)")
+        list.add(l, "01|北海道 (Hokkaido)")
+        list.add(l, "40|福岡県 (Fukuoka)")
+    }
+    return l
+}
+
+postcode_label(cc: string) -> string {
+    if cc == "US" { return "ZIP code" }
+    if cc == "GB" { return "Postcode" }
+    if cc == "JP" { return "郵便番号" }
+    if cc == "DE" { return "PLZ" }
+    return "Postal code"
+}
+
+// A human hint shown as the input placeholder — the shape expected.
+postcode_hint(cc: string) -> string {
+    if cc == "US" { return "12345" }
+    if cc == "GB" { return "SW1A 1AA" }
+    if cc == "JP" { return "100-0001" }
+    if cc == "DE" { return "10115" }
+    return ""
+}
