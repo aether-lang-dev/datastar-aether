@@ -263,7 +263,7 @@ Five layers, each covering what the others cannot:
 - **Component** — the card and inbox driven in a real browser, plus the
   StoraeBook's stories. These need the Aether Selenium port, a declared
   dependency in `aether.toml`:
-  `ae add github.com/aether-lang-dev/selaenium@v0.6.0`. See
+  `ae add github.com/aether-lang-dev/selaenium@v0.7.0`. See
   [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
 Suites are `std.spec`. A missing browser or harness **skips** locally and
