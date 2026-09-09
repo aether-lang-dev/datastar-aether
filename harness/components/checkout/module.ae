@@ -1,0 +1,106 @@
+// harness.components.checkout — the composed page: card, address and
+// phone together, the way they would sit in a real checkout. This is the
+// swa_3 picture from the 2017 UI-component-testing post
+// (paulhammant.com/2017/02/01/ui-component-testing): a page built from
+// several rectangles, where a test can INJECT one component's model in a
+// single operation (the card) so it can focus on the others without
+// re-testing the injected one.
+//
+// It owns no logic of its own — it drops the three components' fragments
+// into one page. Each brings its own signals (card / addr / ph) and its
+// own endpoints (already mounted at /c/card2, /c/address, /c/phone), so
+// nothing here re-implements them; composition is the whole point.
+//
+//   GET /c/checkout   the three components stacked, plus a page-level
+//                     "Place order" that only fires once all three are
+//                     locally plausible (a signals expression, no server).
+
+import contrib.tinyweb
+import std.string
+import harness.page
+import harness.components.card2
+import harness.components.address
+import harness.components.phone
+
+exports(mount, fragment, PATH)
+
+const PATH = "/c/checkout"
+
+mount(_ctx: ptr) {
+    tinyweb.end_point(_ctx, tinyweb.GET, PATH) | req: ptr, res: ptr, ctx: ptr | {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write(res, page.wrap("Checkout", fragment()))
+    }
+}
+
+// The composed page. The three component fragments each carry their own
+// data-signals, which Datastar merges into one store; a page-level wrapper
+// adds a "Place order" button whose enabled state is a pure client-side
+// expression over the three components' signals — no round trip, just a
+// read of what the components already put in the store.
+fragment() -> string {
+    return "<div id=\"checkout-component\">
+  ${page_styles()}
+  <h1 class=\"checkout-title\">Checkout</h1>
+
+  <section class=\"checkout-panel\">
+    ${card2.fragment()}
+  </section>
+  <section class=\"checkout-panel\">
+    ${address.fragment()}
+  </section>
+  <section class=\"checkout-panel\">
+    ${phone.fragment()}
+  </section>
+
+  <div class=\"checkout-actions\">
+    <button id=\"checkout-place\" data-attr:disabled=\"!(\$card.num && \$addr.postcode && \$ph.national)\">Place order</button>
+    <p id=\"checkout-note\">A test can inject the card model in one operation, then drive address and phone — the swa_3 shape.</p>
+  </div>
+</div>"
+}
+
+fn page_styles() -> string {
+    return <<CSS
+    <style>
+    #checkout-component {
+        max-width: 480px;
+        margin: 0 auto;
+        padding: 1rem 0 3rem;
+        font-family: system-ui, sans-serif;
+    }
+    .checkout-title {
+        text-align: center;
+        font-size: 1.6rem;
+        letter-spacing: -.02em;
+        margin: 0 0 1.5rem;
+    }
+    .checkout-panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 1.25rem 1rem;
+        margin-bottom: 1.25rem;
+        background: #fff;
+    }
+    .checkout-actions { text-align: center; margin-top: 1rem; }
+    #checkout-place {
+        padding: .8rem 2.5rem;
+        border: 0;
+        border-radius: 8px;
+        background: #1e3a5f;
+        color: #fff;
+        font-size: 1rem;
+        cursor: pointer;
+    }
+    #checkout-place[disabled] {
+        background: #c3ccd6;
+        cursor: not-allowed;
+    }
+    #checkout-note {
+        color: #6b7280;
+        font-size: .85rem;
+        margin-top: .75rem;
+    }
+    </style>
+    CSS
+}

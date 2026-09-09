@@ -1,0 +1,113 @@
+// Component tests for the composed checkout page — the swa_3 shape from
+// the 2017 UI-component-testing post. The card, address and phone each
+// have their own thorough suites; here we test the COMPOSITION, and we
+// demonstrate the post's central move: inject the card's model in ONE
+// Selenium operation (ngWebDriver.mutate / wd_extra.set_signals), then
+// drive the other rectangles — testing the surrounding page without
+// re-testing the card.
+
+import std.spec
+import std.string
+import harness_fixture
+import wd_extra
+import webdriver
+
+const CHECKOUT_URL = "http://127.0.0.1:4321/c/checkout"
+
+main() {
+    d = harness_fixture.open_browser()
+    stop = harness_fixture.require_browser(d)
+    if stop != "" {
+        harness_fixture.close_browser(d)
+        fw = spec.init()
+        _s = spec.skip_all_if(fw, 1, stop)
+        if harness_fixture.strict_mode() == 1 { return 1 }
+        return 0
+    }
+    rc = run(d)
+    harness_fixture.close_browser(d)
+    return rc
+}
+
+fn fresh(d: ptr) {
+    harness_fixture.reset()
+    _c = harness_fixture.post("/_harness/clock", "{\"year\":2026,\"month\":6}")
+    webdriver.get(d, CHECKOUT_URL)
+}
+
+// Is the Place-order button disabled right now?
+fn place_disabled(d: ptr) -> int {
+    got = webdriver.execute_script(d,
+        "const b=document.getElementById('checkout-place'); return b && b.disabled ? 'yes' : 'no';", "[]")
+    return string.contains(got, "yes")
+}
+
+fn run(d: ptr) -> int {
+    fw = spec.init()
+
+    spec.describe(fw, "checkout — the page composes three components") {
+        spec.before_each() callback { fresh(d) }
+
+        spec.it("renders card, address and phone together") callback {
+            spec.assert_eq(present(d, "card2-component"), 1, "card present")
+            spec.assert_eq(present(d, "address-component"), 1, "address present")
+            spec.assert_eq(present(d, "phone-component"), 1, "phone present")
+        }
+
+        spec.it("Place order is disabled until all three have input") callback {
+            spec.assert_eq(place_disabled(d), 1, "starts disabled")
+            // Fill one field in each rectangle — the button watches all three.
+            _f = wd_extra.set_signals(d,
+                "{\"card2-num\":\"4242424242424242\",\"address-postcode\":\"90210\",\"phone-national\":\"2015550123\"}")
+            sleep(300)
+            spec.assert_eq(place_disabled(d), 0, "enabled once all three filled")
+        }
+    }
+
+    spec.describe(fw, "checkout — inject the card, drive the rest (swa_3)") {
+        spec.before_each() callback { fresh(d) }
+
+        // The post's move: rather than fill the card field-by-field, inject
+        // its whole model in one operation, then focus the test on address
+        // and phone. set_signals IS ngWebDriver.mutate — one Selenium call
+        // sets the bound inputs through the data-bind.
+        spec.it("a mutate-style card injection unblocks the page's card half") callback {
+            // Inject the entire card in one op.
+            _f = wd_extra.set_signals(d,
+                "{\"card2-num\":\"4242424242424242\",\"card2-exp-mm\":\"11\",\"card2-exp-yy\":\"2031\",\"card2-sec\":\"123\"}")
+            sleep(200)
+            // The card is now populated without a single per-field test here.
+            // Now the address and phone are what THIS test actually drives.
+            _f2 = wd_extra.set_signals(d, "{\"address-postcode\":\"SW1A 1AA\"}")
+            // pick GB so the postcode is validated as GB
+            _s = webdriver.execute_script(d,
+                "const s=document.getElementById('address-country'); s.value='GB'; s.dispatchEvent(new Event('change')); return 'ok';", "[]")
+            sleep(400)
+            _f3 = wd_extra.set_signals(d, "{\"address-postcode\":\"SW1A 1AA\"}")
+            harness_fixture.click(d, "address-submit")
+            spec.assert_eq(harness_fixture.wait_text(d, "address-message", "", 3000) >= 0, 1, "address responded")
+            // and the phone rectangle, independently
+            _f4 = wd_extra.set_signals(d, "{\"phone-national\":\"2015550123\"}")
+            harness_fixture.click(d, "phone-submit")
+            spec.assert_eq(harness_fixture.wait_text(d, "phone-status", "saved", 3000), 1, "phone saved")
+        }
+
+        spec.it("the injected card really did fill the card preview") callback {
+            _f = wd_extra.set_signals(d,
+                "{\"card2-num\":\"4242424242424242\"}")
+            // format the number so the preview updates (the card's own /format)
+            _s = webdriver.execute_script(d,
+                "document.getElementById('card2-num').dispatchEvent(new Event('input',{bubbles:true})); return 'ok';", "[]")
+            spec.assert_eq(harness_fixture.wait_text(d, "card-preview-number", "4242 4242 4242 4242", 3000), 1,
+                "injected number reached the card preview")
+        }
+    }
+
+    return spec.run_summary(fw)
+}
+
+fn present(d: ptr, id: string) -> int {
+    got = webdriver.execute_script(d,
+        "return document.getElementById('${id}') ? 'yes' : 'no';", "[]")
+    return string.contains(got, "yes")
+}

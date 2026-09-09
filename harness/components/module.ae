@@ -18,6 +18,7 @@ import harness.components.card2
 import harness.components.inbox
 import harness.components.address
 import harness.components.phone
+import harness.components.checkout
 
 exports(mount_all, index_page, print_mounted, catalogue)
 
@@ -30,6 +31,7 @@ catalogue() -> ptr {
     list.add(l, "inbox|${inbox.PATH}|filtered message list — server-rendered, patches elements")
     list.add(l, "address|${address.PATH}|international address — country picks the field set, server re-renders")
     list.add(l, "phone|${phone.PATH}|international phone — calling code + length validation from libphonenumber")
+    list.add(l, "checkout|${checkout.PATH}|the composed page — card + address + phone, the swa_3 shape")
     return l
 }
 
@@ -40,6 +42,7 @@ mount_all(_ctx: ptr) {
     inbox.mount(_ctx)
     address.mount(_ctx)
     phone.mount(_ctx)
+    checkout.mount(_ctx)
 }
 
 index_page() -> string {
