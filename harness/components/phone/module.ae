@@ -1,0 +1,193 @@
+// harness.components.phone — an international phone-number field. Pick a
+// country; the calling code (+1, +44, …) and an example-shaped placeholder
+// update, and submit validates the national number's length against that
+// country's libphonenumber possible-lengths (via ../validate).
+//
+// Meant to sit under name / address / card in a checkout — the third of
+// the mocked-out rectangles the 2017 UI-component-testing post pictures
+// (paulhammant.com/2017/02/01/ui-component-testing, swa_3.png). Mounted
+// alone here as its own rectangle; composed with the others in a page it
+// would be one injectable component among several.
+//
+// Signals:  ph.country, ph.national, ph.code (the display calling code),
+//           ph.hint (the example placeholder), status, message.
+// Endpoints:
+//   GET  /c/phone            the field
+//   POST /c/phone/country    country changed — update the code + hint
+//   POST /c/phone/submit     validate the national number's length
+
+import contrib.tinyweb
+import std.string
+import std.list
+import std.json
+import datastar
+import harness.page
+import harness.components.phone.validate
+
+exports(mount, fragment, PATH)
+
+const PATH = "/c/phone"
+
+mount(_ctx: ptr) {
+    tinyweb.end_point(_ctx, tinyweb.GET, PATH) | req: ptr, res: ptr, ctx: ptr | {
+        tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+        tinyweb.response_write(res, page.wrap("Phone component", fragment()))
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/country") | req: ptr, res: ptr, ctx: ptr | {
+        country_ep(req, res)
+    }
+    tinyweb.end_point(_ctx, tinyweb.POST, "${PATH}/submit") | req: ptr, res: ptr, ctx: ptr | {
+        submit(req, res)
+    }
+}
+
+fragment() -> string {
+    return "<div id=\"phone-component\" data-signals=\"{ph:{country:'US',national:'',code:'+1',hint:'${validate.example("US")}'},status:'idle',message:''}\">
+  ${form_styles()}
+  <h2>Phone number</h2>
+  <label for=\"phone-country\">Country</label>
+  <select id=\"phone-country\" data-bind:ph.country=\"\" data-on:change=\"@post('${PATH}/country')\">
+    ${country_options()}
+  </select>
+
+  <label for=\"phone-national\">Number</label>
+  <div class=\"phone-row\">
+    <span id=\"phone-code\" class=\"phone-code\" data-text=\"\$ph.code\"></span>
+    <input id=\"phone-national\" data-bind:ph.national=\"\" inputmode=\"tel\" autocomplete=\"off\" data-attr:placeholder=\"\$ph.hint\">
+  </div>
+
+  <button id=\"phone-submit\" data-on:click=\"@post('${PATH}/submit')\">Save phone</button>
+  <p id=\"phone-status\" data-text=\"\$status\"></p>
+  <p id=\"phone-message\" data-text=\"\$message\"></p>
+</div>"
+}
+
+fn country_options() -> string {
+    cs = validate.countries()
+    out = ""
+    n = list.size(cs)
+    for (i = 0; i < n; i++) {
+        cc, _ = list.get(cs, i)
+        out = "${out}<option value=\"${cc}\">${cc} (+${validate.country_code(cc)})</option>\n"
+    }
+    list.free(cs)
+    return out
+}
+
+// --- endpoints -------------------------------------------------------------
+
+fn ph_str(signals: ptr, key: string) -> string {
+    if signals == null { return "" }
+    ph, _ = json.object_get(signals, "ph")
+    if ph == null { return "" }
+    v, _ = json.object_get(ph, key)
+    if v == null { return "" }
+    if json.json_type(v) == 3 {
+        s, err = json.get_string(v)
+        if err != "" { return "" }
+        return s
+    }
+    return ""
+}
+
+// POST /country — update the displayed calling code and the example hint
+// for the newly chosen country. A signal patch, no element re-render
+// needed: the input stays, only its adornments change.
+fn country_ep(req: ptr, res: ptr) {
+    signals, serr = datastar.read_signals(req)
+    cc = "US"
+    if serr == "" { c = ph_str(signals, "country"); if c != "" { cc = c } }
+    if signals != null { json.json_free(signals) }
+
+    code = validate.country_code(cc)
+    hint = validate.example(cc)
+
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+    _e = datastar.patch_signals(sse,
+        "{\"ph\":{\"code\":${datastar.json_quote("+${code}")},\"hint\":${datastar.json_quote(hint)}},\"status\":\"idle\",\"message\":\"\"}", null)
+}
+
+// POST /submit — validate the national number's length for the country.
+fn submit(req: ptr, res: ptr) {
+    signals, serr = datastar.read_signals(req)
+    cc = "US"
+    national = ""
+    if serr == "" {
+        c = ph_str(signals, "country"); if c != "" { cc = c }
+        national = ph_str(signals, "national")
+    }
+    if signals != null { json.json_free(signals) }
+
+    sse, err = datastar.new_sse(res)
+    if err != "" { return }
+    defer datastar.sse_close(sse)
+
+    verr = validate.validate(cc, national)
+    if verr != "" {
+        _e = datastar.patch_signals(sse,
+            "{\"status\":\"invalid\",\"message\":${datastar.json_quote(verr)}}", null)
+        return
+    }
+    _e = datastar.patch_signals(sse,
+        "{\"status\":\"saved\",\"message\":${datastar.json_quote("Saved +${validate.country_code(cc)} ${national}")}}", null)
+}
+
+fn form_styles() -> string {
+    return "<style>${form_css()}</style>"
+}
+
+fn form_css() -> string {
+    return <<CSS
+    #phone-component {
+        max-width: 430px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-family: system-ui, sans-serif;
+    }
+    #phone-component label {
+        font-size: 13px;
+        color: #33475b;
+        margin-top: 8px;
+    }
+    #phone-component select, #phone-component input {
+        padding: 9px 11px;
+        border: 1px solid #c3ccd6;
+        border-radius: 7px;
+        font-size: 15px;
+    }
+    .phone-row { display: flex; align-items: stretch; gap: 8px; }
+    .phone-code {
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        border: 1px solid #c3ccd6;
+        border-radius: 7px;
+        background: #f2f5f8;
+        font-size: 15px;
+        font-weight: 600;
+        color: #33475b;
+    }
+    .phone-row input { flex: 1; }
+    #phone-component input:focus, #phone-component select:focus {
+        outline: none;
+        border-color: #1e3a5f;
+        box-shadow: 0 0 0 3px rgba(30, 58, 95, 0.15);
+    }
+    #phone-submit {
+        margin-top: 16px;
+        padding: 11px;
+        border: 0;
+        border-radius: 7px;
+        background: #1e3a5f;
+        color: #fff;
+        font-size: 15px;
+        cursor: pointer;
+    }
+    #phone-status { font-weight: 600; margin: 12px 0 0; }
+    #phone-message { color: #b23; margin: 2px 0 0; }
+    CSS
+}
