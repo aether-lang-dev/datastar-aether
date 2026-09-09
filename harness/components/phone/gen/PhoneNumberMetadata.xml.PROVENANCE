@@ -1,0 +1,34 @@
+PhoneNumberMetadata.xml — provenance and attribution
+=====================================================
+
+This file is copied VERBATIM from Google's libphonenumber project and is
+the input to gen/generate.ae (which compiles a small subset of it into
+../metadata.ae).
+
+  Source:  https://github.com/google/libphonenumber
+  File:    resources/PhoneNumberMetadata.xml
+  URL:     https://raw.githubusercontent.com/google/libphonenumber/master/resources/PhoneNumberMetadata.xml
+  Fetched: 2026-09-09
+
+License
+-------
+libphonenumber is licensed under the Apache License, Version 2.0.
+Copyright (C) 2009 The Libphonenumber Authors.
+
+The file retains its own Apache-2.0 copyright header (see the top of the
+XML itself). The full license text is in ../reference/libphonenumber-LICENSE.
+
+libphonenumber ships NO NOTICE file (verified: the repository has no
+top-level NOTICE), so Apache-2.0 section 4(d) imposes no additional
+notice-carrying obligation. This PROVENANCE file is our own attribution,
+placed adjacent to the source as required by good practice and to record
+where the file came from and when.
+
+What we use
+-----------
+Only a small fraction. The generator reads six fields per territory for a
+curated set of ~10 countries (id, country calling code, the fixedLine
+possible-lengths, an example number, and one display format). The XML's
+254 territories, per-type national-number regexes, leadingDigits routing,
+and international-format templates are NOT consumed. See gen/generate.ae's
+header for the exact scope and the isPossibleNumber-vs-isValidNumber note.
