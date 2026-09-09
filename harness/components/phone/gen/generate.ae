@@ -80,8 +80,13 @@ main() {
     println("// generator to refresh; see ../reference/libphonenumber-LICENSE.")
     println("//")
     println("// Each row: id|countryCode|nationalLengths|example|formatPattern|formatTemplate")
-    println("// nationalLengths is a comma list (e.g. \"10\" or \"9,10\"); a range")
-    println("// \"7-9\" is expanded by the consumer.")
+    println("// nationalLengths + example are libphonenumber's fixedLine possible-")
+    println("// lengths and example (internally consistent). Lengths use its own")
+    println("// syntax: a comma list of \"N\" and \"[lo-hi]\" tokens.")
+    println("//")
+    println("// This is isPossibleNumber-for-fixedLine level (length by country), not")
+    println("// isValidNumber (which matches the per-type national regex the full")
+    println("// metadata carries and this curated table does not).")
     println("")
     println("import std.list")
     println("")
@@ -99,7 +104,14 @@ main() {
     cur_pattern = ""
     cur_template = ""
     have_format = 0        // only capture the FIRST numberFormat
-    // context: are we inside generalDesc (for the authoritative lengths)?
+    // Capture length and example from the SAME section — <fixedLine> — so
+    // they are internally consistent (the fixedLine example always has a
+    // fixedLine-possible length). A territory-level "union" length is not
+    // reliably present as a simple element (some territories encode it only
+    // in a regex), so fixedLine is the dependable, self-consistent choice.
+    // The scope note in the header says this is isPossibleNumber-for-
+    // fixedLine, not the full union — stated, not hidden.
+    in_fixedline = 0
     in_general = 0
     // what element's text are we about to read?
     pending = ""
@@ -118,22 +130,25 @@ main() {
                 cur_template = ""
                 have_format = 0
                 in_general = 0
+                in_fixedline = 0
             } else if in_territory == 1 {
                 if nm == "generalDesc" { in_general = 1 }
-                // possibleLengths lives in the type sections (fixedLine,
-                // mobile, …), NOT in generalDesc. The first one in a
-                // territory is the fixedLine national length, which is the
-                // representative length we want. Capture it once.
-                if nm == "possibleLengths" && cur_lengths == "" {
+                if nm == "fixedLine" { in_fixedline = 1 }
+                // Length and example both from <fixedLine>, so they agree.
+                if nm == "possibleLengths" && in_fixedline == 1 && cur_lengths == "" {
                     cur_lengths = xml.attr(p, "national")
                 }
+                if nm == "exampleNumber" && in_fixedline == 1 && cur_example == "" {
+                    pending = "example-text"
+                }
+                // The first display format (from availableFormats) is the
+                // formatter template. It is often a special-case pattern, but
+                // it is only a display hint, not used for validation.
                 if nm == "numberFormat" && have_format == 0 {
                     cur_pattern = squeeze(xml.attr(p, "pattern"))
                     have_format = 1
-                    pending = "format"     // the <format> child text is next
                 }
-                if nm == "format" { pending = "format-text" }
-                if nm == "exampleNumber" && cur_example == "" { pending = "example-text" }
+                if nm == "format" && cur_template == "" { pending = "format-text" }
             }
         } else if ev == xml.EVENT_TEXT {
             if pending == "format-text" && cur_template == "" {
@@ -146,6 +161,7 @@ main() {
         } else if ev == xml.EVENT_END {
             nm = xml.name(p)
             if nm == "generalDesc" { in_general = 0 }
+            if nm == "fixedLine" { in_fixedline = 0 }
             if nm == "territory" {
                 if contains_str(want, cur_id) == 1 {
                     // emit the row (only if we got a country code)

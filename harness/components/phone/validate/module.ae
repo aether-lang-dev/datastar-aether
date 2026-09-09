@@ -1,0 +1,159 @@
+// harness.components.phone.validate — validate a national phone number
+// against libphonenumber's possible-lengths, from the generated metadata.
+//
+// Pure, offline-tested. The authority is the generated table
+// (../metadata.ae, compiled from libphonenumber's XML); this module reads
+// it into a lookup and answers "is this a plausible number for country C".
+//
+// "Plausible" here means libphonenumber's `isPossibleNumber` level — the
+// national number has a length the country allows. That is a genuinely
+// useful check (it catches most typos) and is what possibleLengths is for.
+// It is NOT `isValidNumber`, which additionally matches the per-type
+// national-number regex; that needs the full metadata this port does not
+// carry. The distinction is stated, not hidden.
+
+import std.string
+import std.list
+import harness.components.phone.metadata
+
+exports(countries, country_code, example, format_template,
+    is_possible_length, validate, digits,
+    VALID, ERR_REQUIRED, ERR_LENGTH, ERR_UNKNOWN_COUNTRY)
+
+VALID() -> string { return "" }
+ERR_REQUIRED() -> string { return "Phone number is required" }
+ERR_UNKNOWN_COUNTRY() -> string { return "No metadata for that country" }
+ERR_LENGTH(cc: string) -> string { return "Not a possible ${cc} phone number (wrong length)" }
+
+// Keep only 0-9 (a user pastes spaces, dashes, parens, a leading +).
+digits(s: string) -> string {
+    out = ""
+    n = string.length(s)
+    for (i = 0; i < n; i++) {
+        c = string.char_at(s, i)
+        if c >= 48 && c <= 57 { out = "${out}${string.substring(s, i, i + 1)}" }
+    }
+    return out
+}
+
+// The i-th "|"-separated field of a metadata row.
+fn field(row: string, idx: int) -> string {
+    start = 0
+    seen = 0
+    n = string.length(row)
+    for (i = 0; i <= n; i++) {
+        at = 0
+        if i == n { at = 1 } else { if string.char_at(row, i) == 124 { at = 1 } }
+        if at == 1 {
+            if seen == idx { return string.substring(row, start, i) }
+            seen = seen + 1
+            start = i + 1
+        }
+    }
+    return ""
+}
+
+// Find the metadata row for a country id, or "" if absent.
+fn row_for(id: string) -> string {
+    rows = metadata.rows()
+    out = ""
+    n = list.size(rows)
+    for (i = 0; i < n; i++) {
+        r, _ = list.get(rows, i)
+        if field(r, 0) == id { out = r; break }
+    }
+    list.free(rows)
+    return out
+}
+
+// The countries the metadata carries, in id order.
+countries() -> ptr {
+    rows = metadata.rows()
+    l = list.new()
+    n = list.size(rows)
+    for (i = 0; i < n; i++) {
+        r, _ = list.get(rows, i)
+        list.add(l, field(r, 0))
+    }
+    list.free(rows)
+    return l
+}
+
+country_code(id: string) -> string {
+    r = row_for(id)
+    if r == "" { return "" }
+    return field(r, 1)
+}
+
+example(id: string) -> string {
+    r = row_for(id)
+    if r == "" { return "" }
+    return field(r, 3)
+}
+
+format_template(id: string) -> string {
+    r = row_for(id)
+    if r == "" { return "" }
+    return field(r, 5)
+}
+
+// Does `len` satisfy a libphonenumber lengths spec? The spec is a
+// comma-separated list of tokens; each token is either a single number
+// ("10") or a bracketed range ("[6-8]"). e.g. "[6-8],10,12".
+fn length_ok(spec: string, len: int) -> int {
+    // split on commas
+    start = 0
+    n = string.length(spec)
+    for (i = 0; i <= n; i++) {
+        at = 0
+        if i == n { at = 1 } else { if string.char_at(spec, i) == 44 { at = 1 } }  // ','
+        if at == 1 {
+            tok = string.substring(spec, start, i)
+            if token_matches(tok, len) == 1 { return 1 }
+            start = i + 1
+        }
+    }
+    return 0
+}
+
+// One token: "N" (exact) or "[lo-hi]" (inclusive range).
+fn token_matches(tok: string, len: int) -> int {
+    if string.length(tok) == 0 { return 0 }
+    if string.char_at(tok, 0) == 91 {   // '['  -> a range [lo-hi]
+        // strip the brackets, split on '-'
+        inner = string.substring(tok, 1, string.length(tok) - 1)
+        dash = string.index_of(inner, "-")
+        if dash < 0 {
+            v, e = string.to_int(inner)
+            if e == "" && v == len { return 1 }
+            return 0
+        }
+        lo, le = string.to_int(string.substring(inner, 0, dash))
+        hi, he = string.to_int(string.substring(inner, dash + 1, string.length(inner)))
+        if le == "" && he == "" && len >= lo && len <= hi { return 1 }
+        return 0
+    }
+    v, e = string.to_int(tok)
+    if e == "" && v == len { return 1 }
+    return 0
+}
+
+// Is the national number a possible length for this country?
+is_possible_length(id: string, national: string) -> int {
+    r = row_for(id)
+    if r == "" { return 0 }
+    spec = field(r, 2)
+    if spec == "" { return 0 }
+    return length_ok(spec, string.length(digits(national)))
+}
+
+// Validate a raw national-number input for a country. "" if plausible,
+// else the reason.
+validate(id: string, input: string) -> string {
+    ds = digits(input)
+    if string.length(ds) == 0 { return ERR_REQUIRED() }
+    r = row_for(id)
+    if r == "" { return ERR_UNKNOWN_COUNTRY() }
+    if length_ok(field(r, 2), string.length(ds)) == 1 { return VALID() }
+    return ERR_LENGTH(id)
+}

@@ -1,0 +1,80 @@
+// Fast, offline tests for phone validation against the generated
+// libphonenumber metadata. This is isPossibleNumber-level (length by
+// country), not isValidNumber — the distinction the module documents.
+//
+// Every country's own example number (from the metadata, i.e. from
+// libphonenumber itself) must validate — a nice self-check that the
+// generated lengths and the generated examples agree.
+
+import std.spec
+import std.string
+import std.list
+import harness.components.phone.validate
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "phone — digits extraction") {
+        spec.it("strips +, spaces, dashes, parens") callback {
+            spec.assert_str_eq(validate.digits("+1 (201) 555-0123"), "12015550123", "US pretty form")
+            spec.assert_str_eq(validate.digits(""), "", "empty")
+        }
+    }
+
+    spec.describe(fw, "phone — every country's own example validates") {
+        // The example numbers come from libphonenumber; the lengths come
+        // from libphonenumber; they must agree, or the generator dropped
+        // something. This walks the whole generated table.
+        spec.it("each metadata example is a possible number") callback {
+            ids = validate.countries()
+            n = list.size(ids)
+            spec.assert_true(n > 0, "metadata has countries")
+            for (i = 0; i < n; i++) {
+                id, _ = list.get(ids, i)
+                ex = validate.example(id)
+                if string.length(ex) > 0 {
+                    spec.assert_str_eq(validate.validate(id, ex), validate.VALID(),
+                        "${id} example ${ex} is possible")
+                }
+            }
+            list.free(ids)
+        }
+    }
+
+    spec.describe(fw, "phone — length rules by country") {
+        spec.it("US wants exactly 10") callback {
+            spec.assert_str_eq(validate.validate("US", "2015550123"), validate.VALID(), "10 ok")
+            spec.assert_str_eq(validate.validate("US", "201555012"), validate.ERR_LENGTH("US"), "9 rejected")
+            spec.assert_str_eq(validate.validate("US", "20155501234"), validate.ERR_LENGTH("US"), "11 rejected")
+        }
+        spec.it("GB accepts 9 or 10") callback {
+            spec.assert_str_eq(validate.validate("GB", "121234567"), validate.VALID(), "9 ok")
+            spec.assert_str_eq(validate.validate("GB", "1212345678"), validate.VALID(), "10 ok")
+            spec.assert_str_eq(validate.validate("GB", "12123456"), validate.ERR_LENGTH("GB"), "8 rejected")
+        }
+        spec.it("a bracketed range is honoured (CN allows 7..11)") callback {
+            // CN fixedLine possible-lengths are "[7-11]".
+            spec.assert_eq(validate.is_possible_length("CN", "1234567"), 1, "CN 7 possible")
+            spec.assert_eq(validate.is_possible_length("CN", "12345678901"), 1, "CN 11 possible")
+            spec.assert_eq(validate.is_possible_length("CN", "123456"), 0, "CN 6 not possible")
+            spec.assert_eq(validate.is_possible_length("CN", "123456789012"), 0, "CN 12 not possible")
+        }
+    }
+
+    spec.describe(fw, "phone — country code + required + unknown") {
+        spec.it("carries the country calling code") callback {
+            spec.assert_str_eq(validate.country_code("US"), "1", "US +1")
+            spec.assert_str_eq(validate.country_code("GB"), "44", "GB +44")
+            spec.assert_str_eq(validate.country_code("JP"), "81", "JP +81")
+        }
+        spec.it("empty is required") callback {
+            spec.assert_str_eq(validate.validate("US", ""), validate.ERR_REQUIRED(), "empty US")
+            spec.assert_str_eq(validate.validate("US", "abc"), validate.ERR_REQUIRED(), "no digits")
+        }
+        spec.it("an unknown country says so") callback {
+            spec.assert_str_eq(validate.validate("ZZ", "123456"), validate.ERR_UNKNOWN_COUNTRY(), "ZZ unknown")
+        }
+    }
+
+    return spec.run_summary(fw)
+}
