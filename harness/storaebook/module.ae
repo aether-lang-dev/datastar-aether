@@ -31,6 +31,9 @@ import harness.page
 import harness.stories
 import harness.components.card2
 import harness.components.inbox
+import harness.components.address
+import harness.components.phone
+import harness.components.checkout
 import harness.stub.cards
 import harness.stub.messages
 
@@ -154,12 +157,21 @@ fn apply_setup(component: string, setup: string) -> string {
     if setup == "" || setup == "{}" { return "" }
     if component == "card" { return cards.configure(setup) }
     if component == "inbox" { return messages.seed(setup) }
+    // address, phone and checkout carry no stub state — their variety is
+    // in the component's own signals (country), driven in the browser, so
+    // an empty setup is legitimate.
+    if component == "address" { return "" }
+    if component == "phone" { return "" }
+    if component == "checkout" { return "" }
     return "no stub for component '${component}'"
 }
 
 fn component_fragment(component: string) -> string {
     if component == "card" { return card2.fragment() }
     if component == "inbox" { return inbox.fragment() }
+    if component == "address" { return address.fragment() }
+    if component == "phone" { return phone.fragment() }
+    if component == "checkout" { return checkout.fragment() }
     return "<p>No such component: ${component}</p>"
 }
 

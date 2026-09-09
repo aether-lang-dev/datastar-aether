@@ -54,6 +54,12 @@ all_stories() -> ptr {
     list.add(l, "inbox/failing|inbox|Store failure|{\"messages\":[{\"sender\":\"Ana\",\"subject\":\"Lunch?\",\"unread\":true}],\"failNext\":true}|The next query fails. The list must not be cleared by an error — losing what the user was reading is worse than the error.")
     list.add(l, "inbox/slow|inbox|Slow store|{\"messages\":[{\"sender\":\"Ana\",\"subject\":\"Lunch?\",\"unread\":true},{\"sender\":\"Bo\",\"subject\":\"Deploy notes\",\"unread\":false}],\"delayMs\":900}|Nearly a second per query, so the searching state is observable.")
 
+    // The international components — their variety lives in the country
+    // switch, driven in the browser, so the setup is empty.
+    list.add(l, "address/default|address|Address form|{}|International address. Pick a country and the field set re-renders server-side — US state+ZIP, UK county+postcode, JP postal-first, DE PLZ.")
+    list.add(l, "phone/default|phone|Phone field|{}|International phone. The calling code and placeholder track the country; submit validates the number's length against libphonenumber's possible-lengths.")
+    list.add(l, "checkout/default|checkout|Full checkout|{}|The composed page: card, address and phone together — the swa_3 shape, where a test injects the card model in one operation and drives the rest.")
+
     return l
 }
 
