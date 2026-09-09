@@ -1,0 +1,183 @@
+// harness.components.phone.gen.generate — the metadata generator.
+//
+// libphonenumber's authority is one big XML file (PhoneNumberMetadata.xml,
+// ~250 territories). Like every serious libphonenumber port (Java, JS,
+// C++, Python), we do NOT parse that XML at runtime — we compile it, once,
+// into generated code. This tool is that compile step: it streams the XML
+// with std.xml's pull parser and emits a pure-Aether `metadata.ae` table.
+//
+// Run offline when the metadata changes:
+//     ae run harness/components/phone/gen/generate.ae > harness/components/phone/metadata.ae
+//
+// Scope: a CURATED subset of countries, and a TRACTABLE subset of each
+// territory's fields — country code, national possible-lengths, an example
+// number, and the first display format (pattern + template). That is enough
+// for a validator (right country code, right length) and a formatter (group
+// the digits), which is what the phone component needs. It is NOT the whole
+// libphonenumber engine (per-type regexes, leadingDigits routing) — that
+// would be a far larger port. The generated table is credited to
+// libphonenumber (Apache-2.0); see ../reference/.
+
+import std.xml
+import std.string
+import std.list
+import std.file
+
+// The countries to emit. ISO-3166 alpha-2, matching <territory id="…">.
+fn wanted() -> ptr {
+    l = list.new()
+    list.add(l, "US")
+    list.add(l, "GB")
+    list.add(l, "JP")
+    list.add(l, "DE")
+    list.add(l, "FR")
+    list.add(l, "IN")
+    list.add(l, "BR")
+    list.add(l, "AU")
+    list.add(l, "CN")
+    list.add(l, "MX")
+    return l
+}
+
+fn contains_str(l: ptr, s: string) -> int {
+    n = list.size(l)
+    for (i = 0; i < n; i++) {
+        v, _ = list.get(l, i)
+        if v == s { return 1 }
+    }
+    return 0
+}
+
+// Collapse the whitespace libphonenumber pretty-prints inside element text
+// (patterns and lengths span multiple indented lines in the XML).
+fn squeeze(s: string) -> string {
+    out = ""
+    n = string.length(s)
+    for (i = 0; i < n; i++) {
+        c = string.char_at(s, i)
+        // drop spaces, tabs, newlines, carriage returns
+        if c == 32 || c == 9 || c == 10 || c == 13 { continue }
+        out = "${out}${string.substring(s, i, i + 1)}"
+    }
+    return out
+}
+
+main() {
+    xmltext, ferr = file.read("harness/components/phone/gen/PhoneNumberMetadata.xml")
+    if ferr != "" {
+        println("// ERROR reading metadata: ${ferr}")
+        return 1
+    }
+    want = wanted()
+
+    p = xml.parser(xmltext)
+
+    // Emit the module header.
+    println("// harness.components.phone.metadata — GENERATED, do not edit.")
+    println("//")
+    println("// Produced by gen/generate.ae from libphonenumber's")
+    println("// PhoneNumberMetadata.xml (Apache-2.0, (c) Google). Re-run the")
+    println("// generator to refresh; see ../reference/libphonenumber-LICENSE.")
+    println("//")
+    println("// Each row: id|countryCode|nationalLengths|example|formatPattern|formatTemplate")
+    println("// nationalLengths is a comma list (e.g. \"10\" or \"9,10\"); a range")
+    println("// \"7-9\" is expanded by the consumer.")
+    println("")
+    println("import std.list")
+    println("")
+    println("exports(rows)")
+    println("")
+    println("rows() -> ptr {")
+    println("    l = list.new()")
+
+    // Streaming state for the current <territory>.
+    in_territory = 0
+    cur_id = ""
+    cur_cc = ""
+    cur_example = ""
+    cur_lengths = ""
+    cur_pattern = ""
+    cur_template = ""
+    have_format = 0        // only capture the FIRST numberFormat
+    // context: are we inside generalDesc (for the authoritative lengths)?
+    in_general = 0
+    // what element's text are we about to read?
+    pending = ""
+
+    ev = xml.next(p)
+    while ev != xml.EVENT_EOF && ev != xml.EVENT_ERROR {
+        if ev == xml.EVENT_START {
+            nm = xml.name(p)
+            if nm == "territory" {
+                in_territory = 1
+                cur_id = xml.attr(p, "id")
+                cur_cc = xml.attr(p, "countryCode")
+                cur_example = ""
+                cur_lengths = ""
+                cur_pattern = ""
+                cur_template = ""
+                have_format = 0
+                in_general = 0
+            } else if in_territory == 1 {
+                if nm == "generalDesc" { in_general = 1 }
+                // possibleLengths lives in the type sections (fixedLine,
+                // mobile, …), NOT in generalDesc. The first one in a
+                // territory is the fixedLine national length, which is the
+                // representative length we want. Capture it once.
+                if nm == "possibleLengths" && cur_lengths == "" {
+                    cur_lengths = xml.attr(p, "national")
+                }
+                if nm == "numberFormat" && have_format == 0 {
+                    cur_pattern = squeeze(xml.attr(p, "pattern"))
+                    have_format = 1
+                    pending = "format"     // the <format> child text is next
+                }
+                if nm == "format" { pending = "format-text" }
+                if nm == "exampleNumber" && cur_example == "" { pending = "example-text" }
+            }
+        } else if ev == xml.EVENT_TEXT {
+            if pending == "format-text" && cur_template == "" {
+                cur_template = squeeze(xml.text(p))
+                pending = ""
+            } else if pending == "example-text" {
+                cur_example = squeeze(xml.text(p))
+                pending = ""
+            }
+        } else if ev == xml.EVENT_END {
+            nm = xml.name(p)
+            if nm == "generalDesc" { in_general = 0 }
+            if nm == "territory" {
+                if contains_str(want, cur_id) == 1 {
+                    // emit the row (only if we got a country code)
+                    if cur_cc != "" {
+                        row = "${cur_id}|${cur_cc}|${cur_lengths}|${cur_example}|${cur_pattern}|${cur_template}"
+                        // escape any embedded quote/backslash for the .ae literal
+                        println("    list.add(l, \"${esc(row)}\")")
+                    }
+                }
+                in_territory = 0
+            }
+        }
+        ev = xml.next(p)
+    }
+
+    println("    return l")
+    println("}")
+
+    xml.free(p)
+    list.free(want)
+    return 0
+}
+
+// Escape a value for embedding in a double-quoted .ae string literal.
+fn esc(s: string) -> string {
+    out = ""
+    n = string.length(s)
+    for (i = 0; i < n; i++) {
+        c = string.char_at(s, i)
+        if c == 34 { out = "${out}\\\"" }            // "
+        else if c == 92 { out = "${out}\\\\" }       // backslash
+        else { out = "${out}${string.substring(s, i, i + 1)}" }
+    }
+    return out
+}

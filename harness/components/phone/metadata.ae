@@ -1,0 +1,28 @@
+// harness.components.phone.metadata — GENERATED, do not edit.
+//
+// Produced by gen/generate.ae from libphonenumber's
+// PhoneNumberMetadata.xml (Apache-2.0, (c) Google). Re-run the
+// generator to refresh; see ../reference/libphonenumber-LICENSE.
+//
+// Each row: id|countryCode|nationalLengths|example|formatPattern|formatTemplate
+// nationalLengths is a comma list (e.g. "10" or "9,10"); a range
+// "7-9" is expanded by the consumer.
+
+import std.list
+
+exports(rows)
+
+rows() -> ptr {
+    l = list.new()
+    list.add(l, "AU|61|[6-8],10,12|212345678|(\d{2})(\d{3,4})|$1$2")
+    list.add(l, "BR|55|[8-10]|1123456789|(\d{3,6})|$1")
+    list.add(l, "CN|86|[10-12]|1012345678|(\d{5,6})|$1")
+    list.add(l, "DE|49|[5-15]|30123456|(\d{2})(\d{3,13})|$1$2")
+    list.add(l, "FR|33|9|123456789|(\d{4})|$1")
+    list.add(l, "GB|44|9,10|1212345678|(\d{3})(\d{4})|$1$2")
+    list.add(l, "IN|91|[8-13]|7410410123|(\d{7})|$1")
+    list.add(l, "JP|81|[8-17]|312345678|(\d{4})(\d{4})|$1-$2")
+    list.add(l, "MX|52|10|2001234567|(\d{5})|$1")
+    list.add(l, "US|1|10|2015550123|(\d{3})(\d{4})|$1-$2")
+    return l
+}
