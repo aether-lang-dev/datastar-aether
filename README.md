@@ -25,7 +25,7 @@ terms — see [LICENSE](LICENSE).
 Aether **0.818.0** or later, and `contrib.tinyweb` for the examples'
 routing (it ships with a standard Aether install). 0.818 is where `@keep ptr`
 arrived: `sse_over_conn` keeps the connection it is given. Verified on
-**0.823.0** (2026-10-17): the conformance, unit, streaming and TLS suites pass,
+**0.824.0** (2026-10-18): the conformance, unit, streaming and TLS suites pass,
 and every binary in `cmd/` builds.
 
 The component suites do not build on 0.818 or later yet, because selaenium

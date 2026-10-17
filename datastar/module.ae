@@ -957,7 +957,7 @@ patch_elements(p: ptr, elements: string, opts: ptr) -> string {
 // send verb meant every event went out twice; the options-bag form above
 // was the only safe shape.
 builder patch_elements_with(p: ptr, elements: string): string with element_options_new {
-    // Bound to a local first: 0.818-0.823 emit a deferred call's panic thunk
+    // Bound to a local first: 0.818-0.824 emit a deferred call's panic thunk
     // without capturing the implicit `_builder`, so the C does not compile
     // (asks/defer-of-builder-param-panic-thunk.md).
     bag = _builder
@@ -972,7 +972,7 @@ patch_signals(p: ptr, signals_json: string, opts: ptr) -> string {
 
 // Trailing-block form. See `patch_elements_with`.
 builder patch_signals_with(p: ptr, signals_json: string): string with signal_options_new {
-    // Bound to a local first: 0.818-0.823 emit a deferred call's panic thunk
+    // Bound to a local first: 0.818-0.824 emit a deferred call's panic thunk
     // without capturing the implicit `_builder`, so the C does not compile
     // (asks/defer-of-builder-param-panic-thunk.md).
     bag = _builder
@@ -1010,7 +1010,7 @@ execute_script(p: ptr, script: string, opts: ptr) -> string {
 
 // Trailing-block form. See `patch_elements_with`.
 builder execute_script_with(p: ptr, script: string): string with script_options_new {
-    // Bound to a local first: 0.818-0.823 emit a deferred call's panic thunk
+    // Bound to a local first: 0.818-0.824 emit a deferred call's panic thunk
     // without capturing the implicit `_builder`, so the C does not compile
     // (asks/defer-of-builder-param-panic-thunk.md).
     bag = _builder

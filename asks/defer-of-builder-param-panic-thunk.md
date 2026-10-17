@@ -1,4 +1,4 @@
-# `defer f(_builder)` in a builder emits C that does not compile (Aether 0.818.0 to 0.823.0)
+# `defer f(_builder)` in a builder emits C that does not compile (Aether 0.818.0 to 0.824.0)
 
 Found bringing datastar-aether to 0.823.0. `patch_elements_with`,
 `patch_signals_with` and `execute_script_with` each free their options bag
@@ -31,7 +31,7 @@ main() {
 }
 ```
 
-0.817.0 prints `freed` and then `n=7`. 0.823.0 fails at the C compile, on
+0.817.0 prints `freed` and then `n=7`. 0.823.0 and 0.824.0 fail at the C compile, on
 `m.ae:26:11: error: use of undeclared identifier '_builder'`.
 
 ## Why
