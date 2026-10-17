@@ -1,4 +1,4 @@
-// Fixture: serve one Datastar event over HTTPS, then exit.
+// Fixture: serve a Datastar event over HTTPS until the test stops it.
 //
 // This exists because of a defect that shipped silently. The SDK used
 // to take the raw socket with http.response_accept_tunnel, which
@@ -40,7 +40,11 @@ main() {
                 datastar.with_retry_duration(2000)
             }
             datastar.sse_close(sse)
-            os.exit(0)
+            // Return rather than exit here: the server closes the connection
+            // once the handler returns, which sends TLS close_notify. Exiting
+            // inside the handler dropped the socket without one, and curl on
+            // OpenSSL 3 reports that as an error (exit 56). test_tls stops this
+            // process once curl is done.
         }
     }
 

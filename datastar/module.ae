@@ -816,7 +816,7 @@ new_sse(res: ptr) -> (ptr, string) {
 // Wrap an already-upgraded stdlib SSE connection as a Datastar handle,
 // for a caller that obtained one some other way. The handle does not own
 // the connection's lifetime beyond marking itself closed.
-sse_over_conn(conn: ptr) -> ptr {
+sse_over_conn(conn: @keep ptr) -> ptr {
     if conn == null { return null }
     sse = heap.new(Sse)
     sse.conn = conn
@@ -957,8 +957,12 @@ patch_elements(p: ptr, elements: string, opts: ptr) -> string {
 // send verb meant every event went out twice; the options-bag form above
 // was the only safe shape.
 builder patch_elements_with(p: ptr, elements: string): string with element_options_new {
-    defer element_options_free(_builder)
-    return send_patch_elements(p, elements, _builder)
+    // Bound to a local first: 0.818-0.823 emit a deferred call's panic thunk
+    // without capturing the implicit `_builder`, so the C does not compile
+    // (asks/defer-of-builder-param-panic-thunk.md).
+    bag = _builder
+    defer element_options_free(bag)
+    return send_patch_elements(p, elements, bag)
 }
 
 // Send a JSON signals payload for the client to merge into its store.
@@ -968,8 +972,12 @@ patch_signals(p: ptr, signals_json: string, opts: ptr) -> string {
 
 // Trailing-block form. See `patch_elements_with`.
 builder patch_signals_with(p: ptr, signals_json: string): string with signal_options_new {
-    defer signal_options_free(_builder)
-    return send_patch_signals(p, signals_json, _builder)
+    // Bound to a local first: 0.818-0.823 emit a deferred call's panic thunk
+    // without capturing the implicit `_builder`, so the C does not compile
+    // (asks/defer-of-builder-param-panic-thunk.md).
+    bag = _builder
+    defer signal_options_free(bag)
+    return send_patch_signals(p, signals_json, bag)
 }
 
 // `patch_signals` with onlyIfMissing forced on.
@@ -1002,8 +1010,12 @@ execute_script(p: ptr, script: string, opts: ptr) -> string {
 
 // Trailing-block form. See `patch_elements_with`.
 builder execute_script_with(p: ptr, script: string): string with script_options_new {
-    defer script_options_free(_builder)
-    return send_execute_script(p, script, _builder)
+    // Bound to a local first: 0.818-0.823 emit a deferred call's panic thunk
+    // without capturing the implicit `_builder`, so the C does not compile
+    // (asks/defer-of-builder-param-panic-thunk.md).
+    bag = _builder
+    defer script_options_free(bag)
+    return send_execute_script(p, script, bag)
 }
 
 // `console.log(msg)` in the browser.

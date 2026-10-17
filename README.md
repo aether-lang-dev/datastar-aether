@@ -22,8 +22,16 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.638.0** or later, and `contrib.tinyweb` for the examples'
-routing (it ships with a standard Aether install).
+Aether **0.818.0** or later, and `contrib.tinyweb` for the examples'
+routing (it ships with a standard Aether install). 0.818 is where `@keep ptr`
+arrived: `sse_over_conn` keeps the connection it is given. Verified on
+**0.823.0** (2026-10-17): the conformance, unit, streaming and TLS suites pass,
+and every binary in `cmd/` builds.
+
+The component suites do not build on 0.818 or later yet, because selaenium
+does not. Neither v0.2.1 (the declared dependency) nor v0.9.0 (the latest
+release) passes 0.818's ownership checks (E0902) or the current std.http
+client and std.fs signatures. They need a selaenium release made for 0.818.
 
 Four fixes and one feature this SDK depends on, all upstream:
 

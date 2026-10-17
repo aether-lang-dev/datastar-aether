@@ -50,7 +50,7 @@ main() {
     return rc
 }
 
-fn run(d: ptr) -> int {
+fn run(d: @keep ptr) -> int {
     t0 = os.now_monotonic_ms()
     fw = spec.init()
 

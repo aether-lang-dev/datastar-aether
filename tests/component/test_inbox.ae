@@ -45,7 +45,7 @@ main() {
     return rc
 }
 
-fn run(d: ptr) -> int {
+fn run(d: @keep ptr) -> int {
     t0 = os.now_monotonic_ms()
     fw = spec.init()
 
@@ -196,7 +196,7 @@ fn check_unread(d: ptr) {
 // whatever it was before, so "not searching" is true immediately and the
 // wait returns having waited for nothing. Waiting for one of the terminal
 // states cannot pass early.
-fn search(d: ptr) {
+fn search(d: @keep ptr) {
     _r = harness_fixture.click_fast(d, "inbox-search")
     _done = webdriver.wait_until(d, 4000) callback |_| -> settled(status_text(d))
 }
