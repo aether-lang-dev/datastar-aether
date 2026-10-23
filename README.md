@@ -12,6 +12,37 @@ and verified against the same cross-SDK conformance suite every other
 Datastar SDK is held to: **20/20 upstream golden cases pass**, both
 offline and over HTTP against the upstream runner.
 
+## Quick start
+
+You need [Aether](https://github.com/aether-lang-dev/aether) 0.841.0 or later
+and a C compiler. If you don't have `ae` yet, this installs a prebuilt release
+into `~/.local`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aether/main/get.sh \
+  | sh -s -- v0.841.0
+```
+
+Then make a project and add the SDK:
+
+```sh
+ae init myapp && cd myapp
+ae add github.com/aether-lang-dev/datastar-aether@v0.2.0
+```
+
+`ae add` records the dependency in your `aether.toml` and fetches the tagged
+source. From then on `ae build` and `ae run` put the SDK on the module path,
+so `import datastar` just works: no `--lib`, no vendoring. Put the
+[Usage](#usage) example in `src/main.ae`, then:
+
+```sh
+ae run                                                # serves :8080
+curl -N 'http://localhost:8080/updates?datastar=%7B%7D'   # watch the events
+```
+
+The package exports one module, `datastar`; nothing else in this repo is API.
+Versions are git [tags](https://github.com/aether-lang-dev/datastar-aether/tags).
+
 ## License
 
 MIT, as the Go SDK it was ported from. Copyright is shared: the
@@ -22,14 +53,12 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.841.0** and aeb **v0.334** — the pair pinned in
-[`ci/versions.env`](ci/versions.env), the single place to bump — plus
-`contrib.tinyweb` for the examples' routing (it ships with a standard Aether
-install). Verified on **0.841.0** (2026-10-23): the conformance, unit,
-streaming and TLS suites pass; every binary in `cmd/` builds natively and
-cross-builds (`x86_64-linux-musl`, `aarch64-macos`); and the component suites
-compile and run against selaenium **0.14.2**, the declared dependency, which is
-itself built on 0.841.
+Aether **0.841.0** — pinned in [`ci/versions.env`](ci/versions.env), the
+single place to bump — plus `contrib.tinyweb` for routing (it ships with a
+standard Aether install). The SDK itself depends on nothing but the stdlib.
+Verified on **0.841.0** (2026-10-23): the conformance, unit, streaming and TLS
+suites pass; every program in `cmd/` builds; and the component suites compile
+and run against selaenium **0.14.2**, which is itself built on 0.841.
 
 What the move from 0.824 to 0.841 changed for this repo, all fixed in-tree:
 std.json's exported spellings are `encode` / `str` (no longer `stringify` /
@@ -38,28 +67,16 @@ typed `get_string` before it is interpolated or assigned to a string; and a
 `spec.before_each` callback that captures the WebDriver handle needs that
 parameter marked `@keep ptr`.
 
-### Getting the toolchain
+### Working on this repo
 
-`./bootstrap.sh` installs the pinned `ae` and `aeb` into `~/.local` (binary-first,
-needs only `curl` — no compiler, no `make`) and then runs the offline suites, so a
-fresh clone proves itself in one command. `NO_TEST=1 ./bootstrap.sh` installs
-only. By hand, the same installer:
+`./bootstrap.sh` installs the `ae` pinned in `ci/versions.env` and then runs
+the offline suites, so a fresh clone proves itself in one command.
+`NO_TEST=1 ./bootstrap.sh` installs only.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aeb/main/get.sh \
-  | AE_PIN=0.841.0 AEB_REF=v0.334 sh
-```
-
-(Those are the values in `ci/versions.env`; pin them in CI. Prefer the piped
-form to `sh -c "$(curl …)"`.)
-
-This repo builds and tests with plain `ae`. `aeb` (the polyglot build runner)
-is used for exactly one thing, `release/.version.ae` — the node that keeps the
-release version pins in step (see [Releases](#releases)) — and `aeo` (the
-container orchestrator) not at all; those are for multi-language /
-containerized projects. The one external dependency, the Selenium binding for
-the component tests, is a normal `ae add` (see [Testing](#testing)); everything
-else is `task` targets over `ae`.
+This repo builds and tests with plain `ae`, through `task` targets. The one
+external dependency, the Selenium binding for the component tests, is declared
+in `tests/component/aether.toml` (see [Testing](#testing)), not in the root
+manifest, so it is never pulled into a project that uses the SDK.
 
 Fixes and features this SDK depends on, all upstream — several fixed at
 this port's request:
@@ -81,6 +98,7 @@ component tests do not.
 
 ```aether
 import contrib.tinyweb
+import std.json
 import datastar
 
 main() {
@@ -249,19 +267,12 @@ would stop being evidence about the real thing.
 
 Full rationale in [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
-## Releases
+## Versions
 
-The current version is **v0.1.0**
-([release page](https://github.com/aether-lang-dev/datastar-aether/releases/tag/v0.1.0)).
-One tag serves two consumers: `ae add github.com/aether-lang-dev/datastar-aether@<tag>`
-gets the SDK as source at that commit, and the GitHub Release attached to the
-same tag carries the `cmd/` binaries cross-built from one Linux host for Linux
-(glibc and musl), macOS and, opt-in, Windows and FreeBSD — each with a
-`.sha256`. [`release/README.md`](release/README.md) has the build, version-pin
-and publish procedure, ported from the selenium / servirtium-vcr /
-libphonenumber-ae repos; `release/.version.ae` keeps `DATASTAR_AETHER_VERSION`,
-`aether.toml`, `Taskfile.yml` and the link above in step, and
-`release/publish.sh` refuses a tag they disagree with.
+There are no release builds. A version is a git tag: `ae add …@<tag>`
+compiles the SDK from source at that commit, in your project, with your
+toolchain. `aether.toml`'s `version` names the tag it was cut as. The programs
+in `cmd/` are examples and test servers; build them from a clone with `task`.
 
 ## Testing
 
@@ -288,9 +299,10 @@ Five layers, each covering what the others cannot:
   it because every other suite speaks plain HTTP. Reverting the
   transport makes this one fail with the original error.
 - **Component** — the card and inbox driven in a real browser, plus the
-  StoraeBook's stories. These need the Aether Selenium port, a declared
-  dependency in `aether.toml`:
-  `ae add github.com/aether-lang-dev/selaenium@v0.14.2`. See
+  StoraeBook's stories. These need the Aether Selenium port, declared in
+  `tests/component/aether.toml` (its own manifest, so SDK consumers never
+  inherit it). `ae` resolves it when run from that directory, which
+  `task test-component` does. See
   [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
 Suites are `std.spec`. A missing browser or harness **skips** locally and

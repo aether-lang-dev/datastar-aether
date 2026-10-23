@@ -1,0 +1,6 @@
+[package]
+name = "datastar-aether-component-tests"
+version = "0.0.0"
+
+[dependencies]
+"github.com/aether-lang-dev/selaenium" = "0.14.2"

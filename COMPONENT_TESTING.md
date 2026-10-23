@@ -231,29 +231,39 @@ of its tests go red.
 
 ## Where the Selenium binding comes from
 
-One line in `aether.toml`:
+One line in `tests/component/aether.toml`:
 
 ```toml
 [dependencies]
-"github.com/aether-lang-dev/selaenium" = "0.2.1"
+"github.com/aether-lang-dev/selaenium" = "0.14.2"
 ```
 
-`ae` resolves it onto the module search path — `ae lib-path` shows the
-three directories it joined — so nothing here spells selaenium's
-internal layout and the component suites need no `--lib` for it. Install
-it with `ae add github.com/aether-lang-dev/selaenium@v0.2.1`; a declared
-but missing dependency fails by name and tells you that command.
+That is a manifest of its own, not the repo root's, on purpose: a
+dependency's `[dependencies]` resolve transitively, so a test-only
+dependency in the root manifest would be demanded of every project that
+`ae add`s the SDK. `ae` finds the manifest from the working directory, so
+the suites run from `tests/component/` (`task test-component` does the
+`cd`).
+
+`ae` resolves it onto the module search path — `ae lib-path` there shows
+the directories it joined — so nothing here spells selaenium's internal
+layout and the component suites need no `--lib` for it. Install it with
+`ae add github.com/aether-lang-dev/selaenium@v0.14.2` from
+`tests/component/`; a declared but missing dependency fails by name and
+tells you that command.
 
 **Editing the binding locally?** Point at your checkout, and the build
 says so rather than letting a patched run pass for a pinned one:
 
 ```toml
+# tests/component/aether.toml
 [patch]
-"github.com/aether-lang-dev/selaenium" = "../selaenium"
+"github.com/aether-lang-dev/selaenium" = "../../../selaenium"
 ```
 
 ```sh
-ae run tests/component/test_card.ae --lib tests/component \
+cd tests/component
+ae run test_card2.ae --lib . \
   --override github.com/aether-lang-dev/selaenium=../selaenium
 ```
 

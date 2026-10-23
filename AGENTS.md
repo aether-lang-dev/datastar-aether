@@ -31,9 +31,8 @@ tests/*.ae                    offline suites (conformance, unit, streaming, TLS)
 tests/component/              Selenium suites driving a real browser
 tests/fixtures/               servers the tests spawn
 asks/                         correspondence with the Aether language repo
-release/                      cross-build + publish the cmd/ binaries; .version.ae pins
-ci/versions.env               the pinned ae / aeb pair; bootstrap.sh reads it
-DATASTAR_AETHER_VERSION       the release tag, single source of truth for the pins
+tests/component/aether.toml   the component suites' own manifest (selaenium)
+ci/versions.env               the pinned ae; bootstrap.sh reads it
 ```
 
 ## The one structural idea
@@ -79,6 +78,13 @@ Each of these cost an hour or more. They are all still live.
   clone is fine; an existing box compiles the old sources and reports errors
   that look like the dependency's, not yours. `git -C <that dir> fetch --tags
   && git -C <that dir> checkout vX.Y.Z` until `ae` grows an update verb.
+- **The root `aether.toml` is what every consumer resolves.** It must keep
+  `modules = "datastar"` (v0.1.0 shipped without it, so `import datastar`
+  failed for everyone) and must not gain `[dependencies]` — they resolve
+  transitively, so a test-only dependency there is forced on consumers. The
+  check is a scratch project: `ae init`, `ae add`, build the README's Usage
+  example, with `--override github.com/aether-lang-dev/datastar-aether=<this repo>`
+  to try a change before tagging.
 - **A click returns before a server-push app has re-rendered.** `wait_text`
   does the real waiting, but the first poll can read a pre-patch DOM. The
   suites `sleep(60)` after a click for this reason.
@@ -107,22 +113,21 @@ task test              # everything offline: conformance, units, streaming, TLS
 task test-component    # Selenium suites against a freshly started harness
 task harness           # just the harness, for poking by hand at :4321
 task test-upstream     # the real Go runner (needs Go, and task test-server)
-./bootstrap.sh         # install the pinned ae + aeb, then the offline suites
-release/build.sh       # cross-build the cmd/ binaries for the release matrix
-aeb release/.version.ae  # check the release version pins agree
+./bootstrap.sh         # install the pinned ae, then the offline suites
 ```
 
 The component suites need a browser and skip without one. Set
 `COMPONENT_TESTS_REQUIRED=1` in CI so a missing browser is a failure — a skip
 that reports as a pass is how a suite quietly stops testing anything.
 
-Requires Aether **0.841.0** and aeb **v0.334**, the pair in `ci/versions.env`
-(`./bootstrap.sh` installs it). aeb is used only for `release/.version.ae`.
+Requires Aether **0.841.0**, the pin in `ci/versions.env` (`./bootstrap.sh`
+installs it).
 Several fixes in 0.629–0.635 were made at this port's request; `README.md` has
 the table and `aether-issues.txt` the detail.
 
-Releasing: `DS_RELEASE_SET=vX.Y.Z aeb release/.version.ae`, commit, then
-`release/publish.sh vX.Y.Z` — `release/README.md` has the whole procedure.
+Releasing is tagging: there are no binary releases. Consumers
+`ae add github.com/aether-lang-dev/datastar-aether@<tag>` and compile the
+source. Bump `aether.toml`'s `version`, commit, tag, push the tag.
 
 ## The component harness and workbench
 
