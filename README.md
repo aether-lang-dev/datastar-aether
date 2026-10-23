@@ -36,9 +36,11 @@ so `import datastar` just works: no `--lib`, no vendoring. Put the
 [Usage](#usage) example in `src/main.ae`, then:
 
 ```sh
-ae run                                                # serves :8080
-curl -N 'http://localhost:8080/updates?datastar=%7B%7D'   # watch the events
+ae run      # then open http://localhost:8080 and click the button
 ```
+
+To see the raw event stream instead:
+`curl -N 'http://localhost:8080/updates?datastar=%7B%22count%22%3A41%7D'`.
 
 The package exports one module, `datastar`; nothing else in this repo is API.
 Versions are git [tags](https://github.com/aether-lang-dev/datastar-aether/tags).
@@ -96,34 +98,55 @@ component tests do not.
 
 ## Usage
 
+A complete app: a page with a button, and an endpoint that answers each click
+over SSE. Save it as `src/main.ae`, `ae run`, and open http://localhost:8080.
+
 ```aether
 import contrib.tinyweb
 import std.json
 import datastar
 
+const PAGE = "<!doctype html>
+<html><head>
+<script type=\"module\" src=\"https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.3/bundles/datastar.js\"></script>
+</head><body data-signals:count=\"0\">
+  <button data-on:click=\"@get('/updates')\">Click me</button>
+  <p>Clicks: <span data-text=\"$count\"></span></p>
+  <div id=\"output\">Not clicked yet.</div>
+</body></html>"
+
 main() {
     server = tinyweb.web_server_host("localhost", 8080) {
+
+        tinyweb.end_point(tinyweb.GET, "/") |req: ptr, res: ptr, ctx: ptr| {
+            tinyweb.response_set_header(res, "Content-Type", "text/html; charset=utf-8")
+            tinyweb.response_write(res, PAGE)
+        }
 
         tinyweb.end_point(tinyweb.GET, "/updates") |req: ptr, res: ptr, ctx: ptr| {
             // Read the client's signal store off the request.
             signals, err = datastar.read_signals(req)
             if err != "" { return }
             defer json.json_free(signals)
+            count = 0
+            v, _ = json.object_get(signals, "count")
+            if v != null { count = json.json_get_int(v) }
+            count = count + 1
 
             // Upgrade the response to an event stream.
             sse, serr = datastar.new_sse(res)
             if serr != "" { return }
             defer datastar.sse_close(sse)
 
-            // Patch elements into the DOM.
-            _e1 = datastar.patch_elements(sse, "<div id=\"output\">Hello!</div>", null)
+            // Patch elements into the DOM (matched by id).
+            _e1 = datastar.patch_elements(sse, "<div id=\"output\">Hello from the server, ${count} time(s)!</div>", null)
 
-            // Patch signals (client-side state).
-            _e2 = datastar.patch_signals(sse, "{\"count\":1}", null)
+            // Patch signals (client-side state); data-text re-renders.
+            _e2 = datastar.patch_signals(sse, "{\"count\":${count}}", null)
 
-            // Run a script, or send the browser somewhere else.
-            _e3 = datastar.console_log(sse, "hello from the server")
-            _e4 = datastar.redirect(sse, "/next-page")
+            // Run a script in the browser. (datastar.redirect(sse, url)
+            // would navigate it elsewhere.)
+            _e3 = datastar.console_log(sse, "click ${count} handled")
         }
     }
     tinyweb.tw_start(server)
