@@ -14,7 +14,7 @@ keywords = ["datastar", "sse", "hypermedia", "web"]
 # that work). 0.3.0 brings full cross-binding parity + correctness fixes;
 # verified `import webdriver` resolves from it with no --lib.
 [dependencies]
-"github.com/aether-lang-dev/selaenium" = "0.7.0"
+"github.com/aether-lang-dev/selaenium" = "0.14.2"
 
 [build]
 target = "native"

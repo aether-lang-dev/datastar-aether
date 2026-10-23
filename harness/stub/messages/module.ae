@@ -129,13 +129,13 @@ query(filter: string, unread_only: int) -> (ptr, string) {
         if m == null { continue }
 
         if unread_only == 1 {
-            u, _ = map.get(m, "unread")
+            u, _ = map.get_string(m, "unread")
             if string.equals(u, "1") == 0 { continue }
         }
 
         if string.length(needle) > 0 {
-            sender, _ = map.get(m, "sender")
-            subject, _ = map.get(m, "subject")
+            sender, _ = map.get_string(m, "sender")
+            subject, _ = map.get_string(m, "subject")
             hay = string.to_lower("${sender} ${subject}")
             if string.contains(hay, needle) == 0 { continue }
         }
@@ -176,8 +176,8 @@ calls_json() -> string {
         for (i = 0; i < n; i++) {
             if i > 0 { strbuilder.append(sb, ",") }
             q, _ = list.get(queries, i)
-            f, _ = map.get(q, "filter")
-            u, _ = map.get(q, "unread")
+            f, _ = map.get_string(q, "filter")
+            u, _ = map.get_string(q, "unread")
             strbuilder.append(sb, "{\"filter\":")
             strbuilder.append(sb, quote(f))
             strbuilder.append(sb, ",\"unreadOnly\":")
@@ -221,8 +221,8 @@ fn jbool(obj: ptr, key: string, fallback: int) -> int {
 }
 
 fn quote(s: string) -> string {
-    v = json.json_create_string(s)
-    out, err = json.stringify(v)
+    v = json.str(s)
+    out, err = json.encode(v)
     json.json_free(v)
     if err != "" { return "\"\"" }
     return out

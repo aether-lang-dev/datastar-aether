@@ -220,7 +220,7 @@ fn story_tree(current: string) -> string {
     out = ""
     cn = list.size(cats)
     for (ci = 0; ci < cn; ci++) {
-        cname, _ = list.get(cats, ci)
+        cname, _ = list.get_string(cats, ci)
         rows = stories.stories_for(cname)
         items = ""
         n = list.size(rows)

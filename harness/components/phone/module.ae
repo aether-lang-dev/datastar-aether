@@ -67,7 +67,7 @@ fn country_options() -> string {
     out = ""
     n = list.size(cs)
     for (i = 0; i < n; i++) {
-        cc, _ = list.get(cs, i)
+        cc, _ = list.get_string(cs, i)
         out = "${out}<option value=\"${cc}\">${cc} (+${validate.country_code(cc)})</option>\n"
     }
     list.free(cs)

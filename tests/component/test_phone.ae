@@ -37,7 +37,7 @@ fn pick_country(d: ptr, cc: string) {
         "const s=document.getElementById('phone-country'); s.value='${cc}'; s.dispatchEvent(new Event('change')); return 'ok';", "[]")
 }
 
-fn run(d: ptr) -> int {
+fn run(d: @keep ptr) -> int {
     fw = spec.init()
 
     spec.describe(fw, "phone — the calling code tracks the country") {

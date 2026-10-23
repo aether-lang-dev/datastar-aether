@@ -54,7 +54,7 @@ fn is_flipped(d: ptr) -> int {
     return string.contains(got, "true")
 }
 
-fn run(d: ptr) -> int {
+fn run(d: @keep ptr) -> int {
     fw = spec.init()
 
     // One happy-path test for the preview as a whole: fill every field and

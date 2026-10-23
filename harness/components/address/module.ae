@@ -69,7 +69,7 @@ fn country_options() -> string {
     out = ""
     n = list.size(cs)
     for (i = 0; i < n; i++) {
-        cc, _ = list.get(cs, i)
+        cc, _ = list.get_string(cs, i)
         out = "${out}<option value=\"${cc}\">${spec.country_name(cc)}</option>\n"
     }
     list.free(cs)
@@ -84,7 +84,7 @@ fn render_fields(cc: string) -> string {
     out = ""
     n = list.size(fields)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(fields, i)
+        row, _ = list.get_string(fields, i)
         key = field_part(row, 0)
         label = field_part(row, 1)
         kind = field_part(row, 2)
@@ -107,7 +107,7 @@ fn region_options(cc: string) -> string {
     out = "<option value=\"\">—</option>\n"
     n = list.size(rs)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(rs, i)
+        row, _ = list.get_string(rs, i)
         code = field_part(row, 0)
         name = field_part(row, 1)
         out = "${out}<option value=\"${code}\">${name}</option>\n"

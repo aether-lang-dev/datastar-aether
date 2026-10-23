@@ -244,7 +244,7 @@ fn signals_payload(event: ptr) -> string {
     signals, _ = json.object_get(event, "signals")
     if signals == null { return "{}" }
 
-    payload, err = json.stringify(signals)
+    payload, err = json.encode(signals)
     if err != "" { return "{}" }
     return payload
 }
@@ -307,7 +307,7 @@ fn json_scalar_string(v: ptr) -> string {
     }
     if t == JSON_NULL { return "null" }
     // Numbers, arrays and objects fall through to their JSON spelling.
-    s, err = json.stringify(v)
+    s, err = json.encode(v)
     if err != "" { return "" }
     return s
 }

@@ -25,7 +25,7 @@ main() {
             n = list.size(modes)
             spec.assert_eq(n, 8, "advertised mode count")
             for (i = 0; i < n; i++) {
-                m, _ = list.get(modes, i)
+                m, _ = list.get_string(modes, i)
                 got, err = datastar.element_patch_mode_from_string(m)
                 spec.assert_ok(err, "mode '${m}' is accepted")
                 spec.assert_str_eq(got, m, "mode '${m}' round-trips")
@@ -50,7 +50,7 @@ main() {
             n = list.size(namespaces)
             spec.assert_eq(n, 3, "advertised namespace count")
             for (i = 0; i < n; i++) {
-                ns, _ = list.get(namespaces, i)
+                ns, _ = list.get_string(namespaces, i)
                 got, err = datastar.namespace_from_string(ns)
                 spec.assert_ok(err, "namespace '${ns}' is accepted")
                 spec.assert_str_eq(got, ns, "namespace '${ns}' round-trips")

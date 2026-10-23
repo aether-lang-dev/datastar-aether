@@ -50,7 +50,7 @@ index_page() -> string {
     cat = catalogue()
     n = list.size(cat)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(cat, i)
+        row, _ = list.get_string(cat, i)
         name = field(row, 0)
         path = field(row, 1)
         desc = field(row, 2)
@@ -75,7 +75,7 @@ print_mounted(port: int) {
     cat = catalogue()
     n = list.size(cat)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(cat, i)
+        row, _ = list.get_string(cat, i)
         name = field(row, 0)
         path = field(row, 1)
         println("  ${pad(name, 10)} http://127.0.0.1:${port}${path}")

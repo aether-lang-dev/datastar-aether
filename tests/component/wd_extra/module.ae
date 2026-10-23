@@ -93,8 +93,8 @@ wait_for_text(sp: ptr, by: string, value: string, want: string, budget_ms: int) 
 // --- internals -------------------------------------------------------------
 
 fn qs(s: string) -> string {
-    v = json.json_create_string(s)
-    out, err = json.stringify(v)
+    v = json.str(s)
+    out, err = json.encode(v)
     json.json_free(v)
     if err != "" { return "\"\"" }
     return out

@@ -59,7 +59,7 @@ fn row_for(id: string) -> string {
     out = ""
     n = list.size(rows)
     for (i = 0; i < n; i++) {
-        r, _ = list.get(rows, i)
+        r, _ = list.get_string(rows, i)
         if field(r, 0) == id { out = r; break }
     }
     list.free(rows)
@@ -72,7 +72,7 @@ countries() -> ptr {
     l = list.new()
     n = list.size(rows)
     for (i = 0; i < n; i++) {
-        r, _ = list.get(rows, i)
+        r, _ = list.get_string(rows, i)
         list.add(l, field(r, 0))
     }
     list.free(rows)

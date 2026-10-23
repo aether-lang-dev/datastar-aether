@@ -183,9 +183,9 @@ calls_json() -> string {
         for (i = 0; i < n; i++) {
             if i > 0 { strbuilder.append(sb, ",") }
             e, _ = list.get(calls, i)
-            pan, _ = map.get(e, "pan")
-            exp, _ = map.get(e, "expiry")
-            amt, _ = map.get(e, "amount")
+            pan, _ = map.get_string(e, "pan")
+            exp, _ = map.get_string(e, "expiry")
+            amt, _ = map.get_string(e, "amount")
             strbuilder.append(sb, "{\"pan\":")
             strbuilder.append(sb, quote(pan))
             strbuilder.append(sb, ",\"expiry\":")
@@ -220,8 +220,8 @@ fn json_int(obj: ptr, key: string, fallback: int) -> int {
 }
 
 fn quote(s: string) -> string {
-    v = json.json_create_string(s)
-    out, err = json.stringify(v)
+    v = json.str(s)
+    out, err = json.encode(v)
     json.json_free(v)
     if err != "" { return "\"\"" }
     return out

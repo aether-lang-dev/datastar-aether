@@ -248,7 +248,7 @@ fn collect_data_groups(event: ptr) -> ptr {
 // strings; `string.concat` mints one that outlives the borrow.
 fn append_to(m: ptr, key: string, value: string) {
     if map.has(m, key) == 1 {
-        prior, _ = map.get(m, key)
+        prior, _ = map.get_string(m, key)
         map.put(m, key, string.concat("${prior}\n${value}", ""))
     } else {
         map.put(m, key, string.concat(value, ""))

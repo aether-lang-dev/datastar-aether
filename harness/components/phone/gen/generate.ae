@@ -42,7 +42,7 @@ fn wanted() -> ptr {
 fn contains_str(l: ptr, s: string) -> int {
     n = list.size(l)
     for (i = 0; i < n; i++) {
-        v, _ = list.get(l, i)
+        v, _ = list.get_string(l, i)
         if v == s { return 1 }
     }
     return 0

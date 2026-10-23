@@ -1196,8 +1196,8 @@ read_signals(req: ptr) -> (ptr, string) {
 // a literal. The equivalent of Go's `%q`, and the reason the generated
 // `console.log(...)` survives a message containing quotes or newlines.
 json_quote(s: string) -> string {
-    v = json.json_create_string(s)
-    out, err = json.stringify(v)
+    v = json.str(s)
+    out, err = json.encode(v)
     json.json_free(v)
     if err != "" { return "\"\"" }
     return out

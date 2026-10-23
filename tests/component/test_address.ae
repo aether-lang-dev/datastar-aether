@@ -56,7 +56,7 @@ fn label_of(d: ptr, id: string) -> string {
         "const e=document.getElementById('${id}'); const l=e?e.previousElementSibling:null; return l&&l.tagName=='LABEL' ? l.textContent : '';", "[]")
 }
 
-fn run(d: ptr) -> int {
+fn run(d: @keep ptr) -> int {
     fw = spec.init()
 
     spec.describe(fw, "address — the country picks the field set") {

@@ -42,7 +42,7 @@ fn place_disabled(d: ptr) -> int {
     return string.contains(got, "yes")
 }
 
-fn run(d: ptr) -> int {
+fn run(d: @keep ptr) -> int {
     fw = spec.init()
 
     spec.describe(fw, "checkout — the page composes three components") {

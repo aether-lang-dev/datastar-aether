@@ -120,9 +120,9 @@ fn render_items(matches: ptr) -> string {
     for (i = 0; i < n; i++) {
         m, _ = list.get(matches, i)
         if m == null { continue }
-        sender, _ = map.get(m, "sender")
-        subject, _ = map.get(m, "subject")
-        unread, _ = map.get(m, "unread")
+        sender, _ = map.get_string(m, "sender")
+        subject, _ = map.get_string(m, "subject")
+        unread, _ = map.get_string(m, "unread")
 
         cls = ""
         if string.equals(unread, "1") == 1 { cls = " class=\"unread\"" }
