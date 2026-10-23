@@ -22,38 +22,44 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.818.0** or later, and `contrib.tinyweb` for the examples'
-routing (it ships with a standard Aether install). 0.818 is where `@keep ptr`
-arrived: `sse_over_conn` keeps the connection it is given. Verified on
-**0.824.0** (2026-10-18): the conformance, unit, streaming and TLS suites pass,
-and every binary in `cmd/` builds.
+Aether **0.841.0** and aeb **v0.334** — the pair pinned in
+[`ci/versions.env`](ci/versions.env), the single place to bump — plus
+`contrib.tinyweb` for the examples' routing (it ships with a standard Aether
+install). Verified on **0.841.0** (2026-10-23): the conformance, unit,
+streaming and TLS suites pass; every binary in `cmd/` builds natively and
+cross-builds (`x86_64-linux-musl`, `aarch64-macos`); and the component suites
+compile and run against selaenium **0.14.2**, the declared dependency, which is
+itself built on 0.841.
 
-The component suites do not build on 0.818 or later yet, because selaenium
-does not. Neither v0.2.1 (the declared dependency) nor v0.9.0 (the latest
-release) passes 0.818's ownership checks (E0902) or the current std.http
-client and std.fs signatures. They need a selaenium release made for 0.818.
+What the move from 0.824 to 0.841 changed for this repo, all fixed in-tree:
+std.json's exported spellings are `encode` / `str` (no longer `stringify` /
+`json_create_string`); a `ptr` from `list.get` / `map.get` must be read with the
+typed `get_string` before it is interpolated or assigned to a string; and a
+`spec.before_each` callback that captures the WebDriver handle needs that
+parameter marked `@keep ptr`.
 
 ### Getting the toolchain
 
-Installing `ae` needs only `curl` — the toolchain installs a prebuilt
-binary, no compiler and no `make`. The one-liner pins a known-good
-release:
+`./bootstrap.sh` installs the pinned `ae` and `aeb` into `~/.local` (binary-first,
+needs only `curl` — no compiler, no `make`) and then runs the offline suites, so a
+fresh clone proves itself in one command. `NO_TEST=1 ./bootstrap.sh` installs
+only. By hand, the same installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aether/main/get.sh \
-  | AETHER_REF=v0.824.0 sh
+curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aeb/main/get.sh \
+  | AE_PIN=0.841.0 AEB_REF=v0.334 sh
 ```
 
-(`AETHER_REF` selects the release; drop it for the latest. Prefer the
-piped form to `sh -c "$(curl …)"`. To see fetch/progress on your own
-terminal, download first and run it: `curl … -o get.sh &&
-AETHER_REF=v0.824.0 sh get.sh`. Pin this in CI.)
+(Those are the values in `ci/versions.env`; pin them in CI. Prefer the piped
+form to `sh -c "$(curl …)"`.)
 
-This repo builds and tests with plain `ae` — no `aeb` (the polyglot
-build runner) and no `aeo` (the container orchestrator); those are for
-multi-language / containerized projects. The one external dependency,
-the Selenium binding for the component tests, is a normal `ae add` (see
-[Testing](#testing)); everything else is `task` targets over `ae`.
+This repo builds and tests with plain `ae`. `aeb` (the polyglot build runner)
+is used for exactly one thing, `release/.version.ae` — the node that keeps the
+release version pins in step (see [Releases](#releases)) — and `aeo` (the
+container orchestrator) not at all; those are for multi-language /
+containerized projects. The one external dependency, the Selenium binding for
+the component tests, is a normal `ae add` (see [Testing](#testing)); everything
+else is `task` targets over `ae`.
 
 Fixes and features this SDK depends on, all upstream — several fixed at
 this port's request:
@@ -243,6 +249,20 @@ would stop being evidence about the real thing.
 
 Full rationale in [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
+## Releases
+
+The current version is **v0.1.0**
+([release page](https://github.com/aether-lang-dev/datastar-aether/releases/tag/v0.1.0)).
+One tag serves two consumers: `ae add github.com/aether-lang-dev/datastar-aether@<tag>`
+gets the SDK as source at that commit, and the GitHub Release attached to the
+same tag carries the `cmd/` binaries cross-built from one Linux host for Linux
+(glibc and musl), macOS and, opt-in, Windows and FreeBSD — each with a
+`.sha256`. [`release/README.md`](release/README.md) has the build, version-pin
+and publish procedure, ported from the selenium / servirtium-vcr /
+libphonenumber-ae repos; `release/.version.ae` keeps `DATASTAR_AETHER_VERSION`,
+`aether.toml`, `Taskfile.yml` and the link above in step, and
+`release/publish.sh` refuses a tag they disagree with.
+
 ## Testing
 
 ```sh
@@ -270,7 +290,7 @@ Five layers, each covering what the others cannot:
 - **Component** — the card and inbox driven in a real browser, plus the
   StoraeBook's stories. These need the Aether Selenium port, a declared
   dependency in `aether.toml`:
-  `ae add github.com/aether-lang-dev/selaenium@v0.7.0`. See
+  `ae add github.com/aether-lang-dev/selaenium@v0.14.2`. See
   [COMPONENT_TESTING.md](COMPONENT_TESTING.md).
 
 Suites are `std.spec`. A missing browser or harness **skips** locally and

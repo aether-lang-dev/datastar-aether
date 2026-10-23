@@ -24,13 +24,16 @@ cmd/examples/                 helloworld, hotreload
 harness/page/                 shared page shell for mounted components
 harness/components/           one directory per component rectangle
 harness/stub/                 the stubbed backends those components talk to
-harness/stories/              named component states (the workbench's data)
-harness/workbench/            the story browser UI
+harness/stories/              named component states (the StoraeBook's data)
+harness/storaebook/           the story browser UI (Datastar StoraeBook)
 tests/golden/                 vendored upstream conformance goldens
 tests/*.ae                    offline suites (conformance, unit, streaming, TLS)
 tests/component/              Selenium suites driving a real browser
 tests/fixtures/               servers the tests spawn
 asks/                         correspondence with the Aether language repo
+release/                      cross-build + publish the cmd/ binaries; .version.ae pins
+ci/versions.env               the pinned ae / aeb pair; bootstrap.sh reads it
+DATASTAR_AETHER_VERSION       the release tag, single source of truth for the pins
 ```
 
 ## The one structural idea
@@ -69,6 +72,13 @@ Each of these cost an hour or more. They are all still live.
 - **`#card-status` is not `#card-message`.** The status element holds
   `ok`/`empty`/`declined`; the message element holds the human text. Asserting
   on the wrong one is a confusing failure that looks like a component bug.
+- **`ae add` does not move an already-declared dependency.** Bumping the
+  selaenium version in `aether.toml` changes nothing until the cached checkout
+  under `~/.aether/packages/github.com/aether-lang-dev/selaenium` is moved too
+  (`ae add …@vX.Y.Z` answers "Already in dependencies" and leaves it). A fresh
+  clone is fine; an existing box compiles the old sources and reports errors
+  that look like the dependency's, not yours. `git -C <that dir> fetch --tags
+  && git -C <that dir> checkout vX.Y.Z` until `ae` grows an update verb.
 - **A click returns before a server-push app has re-rendered.** `wait_text`
   does the real waiting, but the first poll can read a pre-patch DOM. The
   suites `sleep(60)` after a click for this reason.
@@ -97,16 +107,22 @@ task test              # everything offline: conformance, units, streaming, TLS
 task test-component    # Selenium suites against a freshly started harness
 task harness           # just the harness, for poking by hand at :4321
 task test-upstream     # the real Go runner (needs Go, and task test-server)
+./bootstrap.sh         # install the pinned ae + aeb, then the offline suites
+release/build.sh       # cross-build the cmd/ binaries for the release matrix
+aeb release/.version.ae  # check the release version pins agree
 ```
 
 The component suites need a browser and skip without one. Set
 `COMPONENT_TESTS_REQUIRED=1` in CI so a missing browser is a failure — a skip
 that reports as a pass is how a suite quietly stops testing anything.
 
-Requires Aether **0.818.0** or later (`@keep ptr`), verified on 0.824.0. The
-component suites wait on a selaenium release built for 0.818+ (see README).
-Several fixes in 0.629–0.635 were made at this port's request; `README.md` has the table and `aether-issues.txt` the
-detail.
+Requires Aether **0.841.0** and aeb **v0.334**, the pair in `ci/versions.env`
+(`./bootstrap.sh` installs it). aeb is used only for `release/.version.ae`.
+Several fixes in 0.629–0.635 were made at this port's request; `README.md` has
+the table and `aether-issues.txt` the detail.
+
+Releasing: `DS_RELEASE_SET=vX.Y.Z aeb release/.version.ae`, commit, then
+`release/publish.sh vX.Y.Z` — `release/README.md` has the whole procedure.
 
 ## The component harness and workbench
 
