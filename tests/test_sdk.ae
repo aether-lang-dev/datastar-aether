@@ -517,7 +517,7 @@ fn fetch_one(kind: string) -> string {
     }
 
     req = "GET /once HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n"
-    _n, werr = tcp.write_n(sock, req, string.length(req))
+    _n, werr = tcp.write_n(sock, string.bytes(req))
     if werr != "" {
         spec.fail("${kind}: cannot send request: ${werr}")
         tcp.close(sock)

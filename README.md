@@ -22,9 +22,16 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.643.0** or later for the component tests (the SDK's core
-builds on much older), and `contrib.tinyweb` for the examples' routing
-(it ships with a standard Aether install).
+Aether **0.818.0** or later, and `contrib.tinyweb` for the examples'
+routing (it ships with a standard Aether install). 0.818 is where `@keep ptr`
+arrived: `sse_over_conn` keeps the connection it is given. Verified on
+**0.824.0** (2026-10-18): the conformance, unit, streaming and TLS suites pass,
+and every binary in `cmd/` builds.
+
+The component suites do not build on 0.818 or later yet, because selaenium
+does not. Neither v0.2.1 (the declared dependency) nor v0.9.0 (the latest
+release) passes 0.818's ownership checks (E0902) or the current std.http
+client and std.fs signatures. They need a selaenium release made for 0.818.
 
 ### Getting the toolchain
 
@@ -34,13 +41,13 @@ release:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aether/main/get.sh \
-  | AETHER_REF=v0.650.0 sh
+  | AETHER_REF=v0.824.0 sh
 ```
 
 (`AETHER_REF` selects the release; drop it for the latest. Prefer the
 piped form to `sh -c "$(curl …)"`. To see fetch/progress on your own
 terminal, download first and run it: `curl … -o get.sh &&
-AETHER_REF=v0.650.0 sh get.sh`. Pin this in CI.)
+AETHER_REF=v0.824.0 sh get.sh`. Pin this in CI.)
 
 This repo builds and tests with plain `ae` — no `aeb` (the polyglot
 build runner) and no `aeo` (the container orchestrator); those are for

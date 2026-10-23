@@ -74,7 +74,11 @@ fn check_tls() {
     // only waives trust of the self-signed cert — the handshake, the
     // cipher and the encrypted transport are all real.
     out = "target/tls_out.txt"
-    rc = os.system("curl -sk --max-time 15 https://127.0.0.1:${PORT}/stream > ${out} 2>/dev/null")
+    // The fixture may not be listening yet: retry a refused connect rather
+    // than failing at once, which would leave os.wait below waiting on a
+    // server nobody ever reaches.
+    rc = os.system("curl -sk --max-time 15 --retry 10 --retry-delay 1 --retry-connrefused https://127.0.0.1:${PORT}/stream > ${out} 2>/dev/null")
+    _k = os.kill(token, 15)
     _e, _w = os.wait(token)
 
     if rc != 0 {

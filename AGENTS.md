@@ -103,8 +103,9 @@ The component suites need a browser and skip without one. Set
 `COMPONENT_TESTS_REQUIRED=1` in CI so a missing browser is a failure — a skip
 that reports as a pass is how a suite quietly stops testing anything.
 
-Requires Aether **0.635.0** or later. Several fixes in 0.629–0.635 were made
-at this port's request; `README.md` has the table and `aether-issues.txt` the
+Requires Aether **0.818.0** or later (`@keep ptr`), verified on 0.824.0. The
+component suites wait on a selaenium release built for 0.818+ (see README).
+Several fixes in 0.629–0.635 were made at this port's request; `README.md` has the table and `aether-issues.txt` the
 detail.
 
 ## The component harness and workbench
