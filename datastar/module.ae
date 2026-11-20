@@ -546,7 +546,7 @@ frame(event_type: string, data_lines: ptr, event_id: string, retry_ms: int) -> s
     if data_lines != null {
         n = list.size(data_lines)
         for (i = 0; i < n; i++) {
-            line, _ = list.get(data_lines, i)
+            line, _ = list.get_string(data_lines, i)
             strbuilder.append(sb, "data: ")
             strbuilder.append(sb, line)
             strbuilder.append(sb, NEWLINE)
@@ -734,7 +734,7 @@ fn script_element(script: string, attrs: ptr, auto_remove: int) -> string {
     if attrs != null {
         n = list.size(attrs)
         for (i = 0; i < n; i++) {
-            a, _ = list.get(attrs, i)
+            a, _ = list.get_string(attrs, i)
             strbuilder.append(sb, " ")
             strbuilder.append(sb, a)
         }
@@ -895,7 +895,7 @@ fn join_datalines(data_lines: ptr) -> string {
 
     sb = strbuilder.new(256)
     for (i = 0; i < n; i++) {
-        line, _ = list.get(data_lines, i)
+        line, _ = list.get_string(data_lines, i)
         if i > 0 { strbuilder.append(sb, NEWLINE) }
         strbuilder.append(sb, line)
     }
@@ -1132,7 +1132,7 @@ prefetch(p: ptr, urls: ptr) -> string {
     if urls != null {
         n = list.size(urls)
         for (i = 0; i < n; i++) {
-            u, _ = list.get(urls, i)
+            u, _ = list.get_string(urls, i)
             if i > 0 { strbuilder.append(sb, ",\n\t\t\t\t") }
             strbuilder.append(sb, json_quote(u))
         }

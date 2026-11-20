@@ -120,7 +120,7 @@ The component suites need a browser and skip without one. Set
 `COMPONENT_TESTS_REQUIRED=1` in CI so a missing browser is a failure — a skip
 that reports as a pass is how a suite quietly stops testing anything.
 
-Requires Aether **0.841.0**, the pin in `ci/versions.env` (`./bootstrap.sh`
+Requires Aether **0.931.0**, the pin in `ci/versions.env` (`./bootstrap.sh`
 installs it).
 Several fixes in 0.629–0.635 were made at this port's request; `README.md` has
 the table and `aether-issues.txt` the detail.

@@ -70,7 +70,7 @@ stories_for(component: string) -> ptr {
     all = all_stories()
     n = list.size(all)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(all, i)
+        row, _ = list.get_string(all, i)
         if story_field(row, 1) == component { list.add(out, string.concat(row, "")) }
     }
     list.free(all)
@@ -84,7 +84,7 @@ story_by_id(id: string) -> string {
     found = ""
     n = list.size(all)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(all, i)
+        row, _ = list.get_string(all, i)
         if story_field(row, 0) == id { found = string.concat(row, ""); break }
     }
     list.free(all)

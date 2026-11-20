@@ -269,8 +269,8 @@ fn check_sets(label: string, left: ptr, right: ptr, direction: string, what: str
             continue
         }
         if direction == "expected" {
-            want, _ = map.get(left, k)
-            got, _ = map.get(right, k)
+            want, _ = map.get_string(left, k)
+            got, _ = map.get_string(right, k)
             spec.assert_str_eq(got, want, "${label}: ${what} '${k}'")
         }
     }

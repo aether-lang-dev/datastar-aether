@@ -55,7 +55,7 @@ mount(_ctx: ptr) {
     all = stories.all_stories()
     n = list.size(all)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(all, i)
+        row, _ = list.get_string(all, i)
         id = stories.story_field(row, 0)
 
         tinyweb.end_point(_ctx, tinyweb.GET, "${PATH}/${id}") | req: ptr, res: ptr, ctx: ptr | {
@@ -188,7 +188,7 @@ fn index_page() -> string {
     sb = ""
     n = list.size(cat)
     for (i = 0; i < n; i++) {
-        name, _ = list.get(cat, i)
+        name, _ = list.get_string(cat, i)
         sb = "${sb}${component_section(name)}"
     }
     list.free(cat)
@@ -225,7 +225,7 @@ fn story_tree(current: string) -> string {
         items = ""
         n = list.size(rows)
         for (i = 0; i < n; i++) {
-            row, _ = list.get(rows, i)
+            row, _ = list.get_string(rows, i)
             id = stories.story_field(row, 0)
             title = stories.story_field(row, 2)
             active = ""
@@ -253,7 +253,7 @@ fn component_section(name: string) -> string {
     items = ""
     n = list.size(rows)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(rows, i)
+        row, _ = list.get_string(rows, i)
         id = stories.story_field(row, 0)
         title = stories.story_field(row, 2)
         note = stories.story_field(row, 4)
@@ -384,7 +384,7 @@ fn sibling_list(component: string, current: string) -> string {
     items = ""
     n = list.size(rows)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(rows, i)
+        row, _ = list.get_string(rows, i)
         id = stories.story_field(row, 0)
         title = stories.story_field(row, 2)
         cls = "sb-sib"
@@ -403,7 +403,7 @@ fn harness_components() -> ptr {
     all = stories.all_stories()
     n = list.size(all)
     for (i = 0; i < n; i++) {
-        row, _ = list.get(all, i)
+        row, _ = list.get_string(all, i)
         c = stories.story_field(row, 1)
         if contains_str(seen, c) == 0 { list.add(seen, string.concat(c, "")) }
     }

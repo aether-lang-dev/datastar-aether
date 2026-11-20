@@ -14,13 +14,13 @@ offline and over HTTP against the upstream runner.
 
 ## Quick start
 
-You need [Aether](https://github.com/aether-lang-dev/aether) 0.841.0 or later
+You need [Aether](https://github.com/aether-lang-dev/aether) 0.931.0 or later
 and a C compiler. If you don't have `ae` yet, this installs a prebuilt release
 into `~/.local`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aether/main/get.sh \
-  | sh -s -- v0.841.0
+  | sh -s -- v0.931.0
 ```
 
 Then make a project and add the SDK:
@@ -55,12 +55,20 @@ terms — see [LICENSE](LICENSE).
 
 ## Requirements
 
-Aether **0.841.0** — pinned in [`ci/versions.env`](ci/versions.env), the
+Aether **0.931.0** — pinned in [`ci/versions.env`](ci/versions.env), the
 single place to bump — plus `contrib.tinyweb` for routing (it ships with a
 standard Aether install). The SDK itself depends on nothing but the stdlib.
-Verified on **0.841.0** (2026-10-23): the conformance, unit, streaming and TLS
-suites pass; every program in `cmd/` builds; and the component suites compile
-and run against selaenium **0.14.2**, which is itself built on 0.841.
+Verified on **0.931.0** (2026-11-20): the conformance, unit, streaming and TLS
+suites pass; every program in `cmd/` builds; and the six component suites (47
+tests) pass under a virtual display. The component suites ran against
+selaenium's `main` branch through `ae run --override`, because the released
+selaenium **0.14.2** does not compile on 0.931.0; `tests/component/aether.toml`
+keeps naming 0.14.2 until selaenium cuts a release that does.
+
+What the move from 0.841 to 0.931 changed for this repo: a `ptr` read from
+`list.get` or `map.get` can no longer be given to a `string` parameter (E0202,
+0.927.0), so the string lists in the SDK, harness and conformance test use
+`list.get_string` / `map.get_string`.
 
 What the move from 0.824 to 0.841 changed for this repo, all fixed in-tree:
 std.json's exported spellings are `encode` / `str` (no longer `stringify` /
