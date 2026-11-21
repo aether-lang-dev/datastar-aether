@@ -30,7 +30,7 @@ main() {
             n = list.size(ids)
             spec.assert_true(n > 0, "metadata has countries")
             for (i = 0; i < n; i++) {
-                id, _ = list.get(ids, i)
+                id, _ = list.get_string(ids, i)
                 ex = validate.example(id)
                 if string.length(ex) > 0 {
                     spec.assert_str_eq(validate.validate(id, ex), validate.VALID(),
